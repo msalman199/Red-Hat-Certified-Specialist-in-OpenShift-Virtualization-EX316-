@@ -1,0 +1,397 @@
+Lab 1: Introduction to OpenShift Virtualization Components
+Lab Objectives
+By the end of this lab, students will be able to:
+
+Understand the architecture and core components of OpenShift Virtualization
+Identify and explain the role of KubeVirt components including VM, VMI, and Virt-Launcher
+Analyze VirtualMachine Custom Resources and their configuration
+Navigate the OpenShift Virtualization environment using command-line tools
+Demonstrate practical knowledge of virtualization concepts within Kubernetes
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Kubernetes concepts (pods, services, custom resources)
+Familiarity with Linux command-line operations
+Knowledge of YAML file structure and syntax
+Understanding of virtualization concepts
+Experience with OpenShift CLI (oc command)
+Lab Environment Setup
+Ready-to-Use Cloud Machines: Al Nafi provides pre-configured Linux-based cloud machines with OpenShift Virtualization already installed. Simply click Start Lab to access your environment - no need to build your own VM or install software.
+
+Your lab environment includes:
+
+OpenShift cluster with Virtualization operator installed
+Command-line access with necessary tools
+Sample virtual machine configurations
+Administrative privileges for exploration
+Task 1: Study OpenShift Virtualization Architecture
+Subtask 1.1: Understanding the Overall Architecture
+OpenShift Virtualization extends OpenShift Container Platform to run and manage virtual machine workloads alongside container workloads.
+
+Key Architecture Components:
+
+OpenShift Virtualization Operator: Manages the lifecycle of virtualization components
+KubeVirt: The core virtualization technology
+Containerized Data Importer (CDI): Handles VM disk image imports
+Multus CNI: Provides additional network interfaces
+Node Feature Discovery (NFD): Detects hardware features
+Subtask 1.2: Explore the Virtualization Operator
+First, let's examine the OpenShift Virtualization operator installation:
+
+# Check if the virtualization operator is installed
+oc get csv -n openshift-cnv
+
+# View the operator details
+oc describe csv -n openshift-cnv
+Subtask 1.3: Examine Virtualization Components
+List all virtualization-related resources:
+
+# Check virtualization pods
+oc get pods -n openshift-cnv
+
+# View virtualization services
+oc get svc -n openshift-cnv
+
+# Check custom resource definitions related to virtualization
+oc get crd | grep -E "(virtualmachine|kubevirt)"
+Subtask 1.4: Understanding the Data Flow
+Create a simple diagram understanding by examining the components:
+
+# Check the KubeVirt configuration
+oc get kubevirt -n openshift-cnv -o yaml
+
+# Examine the hyperconverged configuration
+oc get hyperconverged -n openshift-cnv -o yaml
+Task 2: Explore KubeVirt Components
+Subtask 2.1: Understanding Virtual Machine (VM) Objects
+The VirtualMachine is a custom resource that represents the desired state of a virtual machine.
+
+Create a sample VM definition to understand its structure:
+
+# Create a directory for our lab files
+mkdir ~/virtualization-lab
+cd ~/virtualization-lab
+
+# Create a sample VM definition
+cat > sample-vm.yaml << 'EOF'
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: sample-vm
+  namespace: default
+spec:
+  running: false
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: sample-vm
+    spec:
+      domain:
+        cpu:
+          cores: 1
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: containerdisk
+          - disk:
+              bus: virtio
+            name: cloudinitdisk
+          interfaces:
+          - masquerade: {}
+            name: default
+        machine:
+          type: pc-q35-rhel8.4.0
+        resources:
+          requests:
+            memory: 1Gi
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+      - containerDisk:
+          image: quay.io/kubevirt/cirros-container-disk-demo
+        name: containerdisk
+      - cloudInitNoCloud:
+          userDataBase64: SGkuXG4=
+        name: cloudinitdisk
+EOF
+Apply the VM definition:
+
+# Create the virtual machine
+oc apply -f sample-vm.yaml
+
+# Check the VM status
+oc get vm sample-vm
+Subtask 2.2: Understanding Virtual Machine Instance (VMI)
+A VirtualMachineInstance represents a running virtual machine instance.
+
+Start the VM and observe the VMI creation:
+
+# Start the virtual machine
+oc patch vm sample-vm --type merge -p '{"spec":{"running":true}}'
+
+# Watch the VMI creation
+oc get vmi -w
+In a new terminal, examine the VMI details:
+
+# Get detailed information about the VMI
+oc describe vmi sample-vm
+
+# Check the VMI YAML configuration
+oc get vmi sample-vm -o yaml
+Subtask 2.3: Understanding Virt-Launcher Pods
+The virt-launcher pod is responsible for running the actual virtual machine process.
+
+Examine the virt-launcher pod:
+
+# Find the virt-launcher pod for our VM
+oc get pods -l kubevirt.io/vm=sample-vm
+
+# Get detailed information about the virt-launcher pod
+LAUNCHER_POD=$(oc get pods -l kubevirt.io/vm=sample-vm -o jsonpath='{.items[0].metadata.name}')
+oc describe pod $LAUNCHER_POD
+Subtask 2.4: Exploring Pod Resources and Relationships
+Understand the relationship between VM, VMI, and virt-launcher:
+
+# Check the owner references
+oc get vmi sample-vm -o jsonpath='{.metadata.ownerReferences}' | jq
+
+# Check the pod's owner references
+oc get pod $LAUNCHER_POD -o jsonpath='{.metadata.ownerReferences}' | jq
+
+# View the complete resource hierarchy
+echo "=== Virtual Machine ==="
+oc get vm sample-vm
+echo "=== Virtual Machine Instance ==="
+oc get vmi sample-vm
+echo "=== Virt-Launcher Pod ==="
+oc get pod $LAUNCHER_POD
+Task 3: Understand VirtualMachine Custom Resource
+Subtask 3.1: Analyzing VM Specification Components
+Let's break down the VirtualMachine custom resource structure:
+
+# Create a more comprehensive VM example
+cat > comprehensive-vm.yaml << 'EOF'
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: comprehensive-vm
+  namespace: default
+  labels:
+    app: test-vm
+    environment: lab
+spec:
+  running: false
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: comprehensive-vm
+        app: test-vm
+    spec:
+      domain:
+        cpu:
+          cores: 2
+          threads: 1
+          sockets: 1
+        memory:
+          guest: 2Gi
+        devices:
+          disks:
+          - name: containerdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: default
+            masquerade: {}
+          networkInterfaceMultiqueue: true
+        machine:
+          type: pc-q35-rhel8.4.0
+        features:
+          smm:
+            enabled: true
+          acpi: {}
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+      - name: containerdisk
+        containerDisk:
+          image: quay.io/kubevirt/cirros-container-disk-demo
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userDataBase64: I2Nsb3VkLWNvbmZpZwpwYXNzd29yZDogY2lyc29zCmNoYXNzd2Q6IEZhbHNlCnNzaF9wd2F1dGg6IFRydWUK
+EOF
+Subtask 3.2: Understanding VM Lifecycle Management
+Apply and manage the comprehensive VM:
+
+# Apply the comprehensive VM
+oc apply -f comprehensive-vm.yaml
+
+# Check the VM status
+oc get vm comprehensive-vm -o wide
+
+# Start the VM
+oc patch vm comprehensive-vm --type merge -p '{"spec":{"running":true}}'
+
+# Monitor the startup process
+oc get vmi comprehensive-vm -w
+Subtask 3.3: Examining VM Configuration Details
+Analyze different sections of the VM configuration:
+
+# Extract CPU configuration
+oc get vm comprehensive-vm -o jsonpath='{.spec.template.spec.domain.cpu}' | jq
+
+# Extract memory configuration
+oc get vm comprehensive-vm -o jsonpath='{.spec.template.spec.domain.memory}' | jq
+
+# Extract disk configuration
+oc get vm comprehensive-vm -o jsonpath='{.spec.template.spec.domain.devices.disks}' | jq
+
+# Extract network configuration
+oc get vm comprehensive-vm -o jsonpath='{.spec.template.spec.networks}' | jq
+Subtask 3.4: Understanding VM Status and Conditions
+Examine the VM status information:
+
+# Get VM status
+oc get vm comprehensive-vm -o jsonpath='{.status}' | jq
+
+# Check VM conditions
+oc get vm comprehensive-vm -o jsonpath='{.status.conditions}' | jq
+
+# Get VMI status if running
+oc get vmi comprehensive-vm -o jsonpath='{.status}' | jq 2>/dev/null || echo "VMI not running"
+Subtask 3.5: Working with VM Operations
+Perform basic VM operations:
+
+# Stop the VM
+oc patch vm comprehensive-vm --type merge -p '{"spec":{"running":false}}'
+
+# Wait for VM to stop
+oc wait --for=delete vmi/comprehensive-vm --timeout=60s
+
+# Restart the VM
+oc patch vm comprehensive-vm --type merge -p '{"spec":{"running":true}}'
+
+# Check the restart
+oc get vm comprehensive-vm
+oc get vmi comprehensive-vm
+Advanced Exploration Tasks
+Understanding Resource Relationships
+Create a script to show the complete relationship between virtualization resources:
+
+# Create a resource relationship script
+cat > show-vm-relationships.sh << 'EOF'
+#!/bin/bash
+
+VM_NAME=${1:-comprehensive-vm}
+
+echo "=== Virtual Machine Resource Hierarchy ==="
+echo "VM Name: $VM_NAME"
+echo
+
+echo "1. Virtual Machine (VM):"
+oc get vm $VM_NAME -o custom-columns=NAME:.metadata.name,RUNNING:.spec.running,AGE:.metadata.creationTimestamp --no-headers 2>/dev/null || echo "   VM not found"
+
+echo
+echo "2. Virtual Machine Instance (VMI):"
+oc get vmi $VM_NAME -o custom-columns=NAME:.metadata.name,PHASE:.status.phase,NODE:.status.nodeName,AGE:.metadata.creationTimestamp --no-headers 2>/dev/null || echo "   VMI not running"
+
+echo
+echo "3. Virt-Launcher Pod:"
+LAUNCHER_POD=$(oc get pods -l kubevirt.io/vm=$VM_NAME -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+if [ ! -z "$LAUNCHER_POD" ]; then
+    oc get pod $LAUNCHER_POD -o custom-columns=NAME:.metadata.name,STATUS:.status.phase,NODE:.spec.nodeName,AGE:.metadata.creationTimestamp --no-headers
+else
+    echo "   Launcher pod not found"
+fi
+
+echo
+echo "4. Related Services:"
+oc get svc -l kubevirt.io/vm=$VM_NAME --no-headers 2>/dev/null || echo "   No services found"
+
+echo
+echo "=== Resource Details ==="
+if [ ! -z "$LAUNCHER_POD" ]; then
+    echo "Pod Resource Usage:"
+    oc top pod $LAUNCHER_POD 2>/dev/null || echo "   Metrics not available"
+fi
+EOF
+
+chmod +x show-vm-relationships.sh
+
+# Run the script
+./show-vm-relationships.sh comprehensive-vm
+Exploring VM Templates and Presets
+Examine available VM templates and presets:
+
+# Check for available templates
+oc get templates -n openshift | grep -i vm
+
+# Look for VM presets
+oc get virtualmachinepresets 2>/dev/null || echo "No VM presets found"
+
+# Check for common VM configurations
+oc get configmap -n openshift-cnv | grep -i template
+Troubleshooting Common Issues
+Issue 1: VM Won't Start
+# Check VM events
+oc describe vm sample-vm | grep -A 10 Events
+
+# Check VMI events if exists
+oc describe vmi sample-vm 2>/dev/null | grep -A 10 Events
+
+# Check node resources
+oc describe nodes | grep -A 5 "Allocated resources"
+Issue 2: Networking Problems
+# Check network policies
+oc get networkpolicies
+
+# Verify multus configuration
+oc get network-attachment-definitions
+
+# Check pod networking
+oc exec -it $LAUNCHER_POD -- ip addr show
+Issue 3: Storage Issues
+# Check persistent volume claims
+oc get pvc
+
+# Check storage classes
+oc get storageclass
+
+# Verify CDI components
+oc get pods -n openshift-cnv | grep cdi
+Lab Cleanup
+Clean up the resources created during this lab:
+
+# Stop and delete VMs
+oc patch vm sample-vm --type merge -p '{"spec":{"running":false}}'
+oc patch vm comprehensive-vm --type merge -p '{"spec":{"running":false}}'
+
+# Wait for VMIs to terminate
+sleep 30
+
+# Delete the VMs
+oc delete vm sample-vm comprehensive-vm
+
+# Remove lab files
+rm -f ~/virtualization-lab/sample-vm.yaml
+rm -f ~/virtualization-lab/comprehensive-vm.yaml
+rm -f ~/virtualization-lab/show-vm-relationships.sh
+Conclusion
+In this comprehensive lab, you have successfully:
+
+Explored OpenShift Virtualization Architecture: You learned how OpenShift Virtualization extends Kubernetes to support virtual machines alongside containers, understanding the role of operators, CDI, and supporting components.
+
+Mastered KubeVirt Components: You gained hands-on experience with the three core components:
+
+VirtualMachine (VM): The desired state configuration for virtual machines
+VirtualMachineInstance (VMI): The running instance of a virtual machine
+Virt-Launcher: The pod that actually runs the virtual machine process
+Analyzed Custom Resources: You created, configured, and managed VirtualMachine custom resources, understanding their structure, lifecycle, and relationship to other Kubernetes objects.
+
+Developed Practical Skills: You learned to use OpenShift CLI tools to manage virtualization workloads, troubleshoot common issues, and understand resource relationships.
+
