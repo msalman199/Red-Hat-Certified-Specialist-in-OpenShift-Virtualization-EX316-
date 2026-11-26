@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vmi-health-check
+  namespace: vmi-lab
+data:
+  health-check.sh: |
+    #!/bin/bash
+    
+    check_vmi_health() {
+        local vmi_name=$1
+        echo "Checking health of VMI: $vmi_name"
+        
+        # Check VMI status
+        status=$(oc get vmi $vmi_name -o jsonpath='{.status.phase}' 2>/dev/null)
+        if [ "$status" = "Running" ]; then
+            echo "  ✓ VMI is running"
+        else
+            echo "  ✗ VMI status: $status"
+            return 1
+        fi
+        
+        # Check associated pod
+        pod=$(oc get pods -l kubevirt.io/created-by=$vmi_name -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+        if [ ! -z "$pod" ]; then
+            pod_status=$(oc get pod $pod -o jsonpath='{.status.phase}')
+            echo "  ✓ Associated pod ($pod) status: $pod_status"
+        else
+            echo "  ✗ No associated pod found"
+            return 1
+        fi
+        
+        return 0
+    }
+    
+    # Check all VMIs
+    for vmi in $(oc get vmi -o jsonpath='{.items[*].metadata.name}'); do
+        check_vmi_health $vmi
+        echo ""
+    done

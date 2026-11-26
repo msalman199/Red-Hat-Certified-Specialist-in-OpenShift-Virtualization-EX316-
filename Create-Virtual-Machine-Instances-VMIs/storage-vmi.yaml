@@ -1,0 +1,53 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachineInstance
+metadata:
+  name: storage-vmi
+  namespace: vmi-lab
+  labels:
+    app: storage-vm
+    storage-type: persistent
+spec:
+  domain:
+    cpu:
+      cores: 1
+    memory:
+      guest: 2Gi
+    devices:
+      disks:
+      - name: pvcdisk
+        disk:
+          bus: virtio
+      - name: containerdisk
+        disk:
+          bus: virtio
+      - name: cloudinitdisk
+        disk:
+          bus: virtio
+      interfaces:
+      - name: default
+        masquerade: {}
+    machine:
+      type: q35
+  networks:
+  - name: default
+    pod: {}
+  volumes:
+  - name: pvcdisk
+    persistentVolumeClaim:
+      claimName: vmi-disk-pvc
+  - name: containerdisk
+    containerDisk:
+      image: quay.io/kubevirt/fedora-cloud-container-disk-demo
+  - name: cloudinitdisk
+    cloudInitNoCloud:
+      userData: |
+        #cloud-config
+        user: fedora
+        password: fedora
+        chpasswd: { expire: False }
+        ssh_pwauth: True
+        runcmd:
+        - mkfs.ext4 /dev/vda
+        - mkdir -p /mnt/persistent
+        - mount /dev/vda /mnt/persistent
+        - echo "Persistent storage mounted" > /mnt/persistent/test.txt

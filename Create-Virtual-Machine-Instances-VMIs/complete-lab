@@ -1,0 +1,745 @@
+Lab 3: Create Virtual Machine Instances (VMIs)
+Lab Overview
+This lab focuses on creating and managing Virtual Machine Instances (VMIs) using OpenShift Virtualization. You will learn to define VM specifications through YAML manifests, configure resource allocations, and monitor VM lifecycle operations.
+
+Objectives
+By the end of this lab, you will be able to:
+
+Create Virtual Machine Instances (VMIs) using YAML manifests
+Configure CPU, memory, and storage specifications for VMs
+Deploy VMIs on OpenShift clusters
+Monitor and manage VM lifecycle operations
+Troubleshoot common VMI deployment issues
+Understand the relationship between VMIs and OpenShift resources
+Prerequisites
+Before starting this lab, ensure you have:
+
+Basic understanding of Kubernetes/OpenShift concepts (pods, deployments, services)
+Familiarity with YAML syntax and structure
+Knowledge of Linux command-line operations
+Understanding of virtualization concepts
+Access to OpenShift CLI (oc) commands
+Basic networking knowledge
+Lab Environment Setup
+Ready-to-Use Cloud Machines: Al Nafi provides pre-configured Linux-based cloud machines with OpenShift Virtualization already installed. Simply click Start Lab to access your environment - no need to build your own VM or install additional software.
+
+Your lab environment includes:
+
+OpenShift cluster with Virtualization operator installed
+Pre-configured storage classes
+Network configurations ready for VM deployment
+All necessary CLI tools pre-installed
+Task 1: Understanding VMI Architecture and Components
+Subtask 1.1: Explore OpenShift Virtualization Components
+First, let's understand the current state of your OpenShift Virtualization environment.
+
+Check OpenShift Virtualization Operator Status
+oc get csv -n openshift-cnv
+Verify Available Storage Classes
+oc get storageclass
+Check Available Nodes and Resources
+oc get nodes -o wide
+oc describe nodes | grep -A 5 "Allocated resources"
+Subtask 1.2: Examine Existing VMI Resources
+List Current VMIs (if any)
+oc get vmi -A
+Check VMI Custom Resource Definitions
+oc get crd | grep virtualmachine
+Explore VMI API Resources
+oc api-resources | grep kubevirt
+Task 2: Create Basic Virtual Machine Instances Using YAML
+Subtask 2.1: Create a Simple VMI with Minimal Configuration
+Create a Project for VMI Testing
+oc new-project vmi-lab
+oc project vmi-lab
+Create Basic VMI YAML Manifest
+Create a file named basic-vmi.yaml:
+
+apiVersion: kubevirt.io/v1
+kind: VirtualMachineInstance
+metadata:
+  name: basic-vmi
+  namespace: vmi-lab
+  labels:
+    app: basic-vm
+    environment: lab
+spec:
+  domain:
+    cpu:
+      cores: 1
+    memory:
+      guest: 1Gi
+    devices:
+      disks:
+      - name: containerdisk
+        disk:
+          bus: virtio
+      - name: cloudinitdisk
+        disk:
+          bus: virtio
+      interfaces:
+      - name: default
+        masquerade: {}
+    machine:
+      type: q35
+  networks:
+  - name: default
+    pod: {}
+  volumes:
+  - name: containerdisk
+    containerDisk:
+      image: quay.io/kubevirt/cirros-container-disk-demo
+  - name: cloudinitdisk
+    cloudInitNoCloud:
+      userData: |
+        #cloud-config
+        password: fedora
+        chpasswd: { expire: False }
+        ssh_pwauth: True
+Deploy the Basic VMI
+oc apply -f basic-vmi.yaml
+Monitor VMI Creation
+oc get vmi basic-vmi -w
+Subtask 2.2: Verify VMI Deployment
+Check VMI Status and Details
+oc describe vmi basic-vmi
+View VMI Events
+oc get events --field-selector involvedObject.name=basic-vmi
+Check Associated Pod
+oc get pods -l kubevirt.io/created-by=basic-vmi
+Task 3: Configure Advanced CPU, Memory, and Storage Specifications
+Subtask 3.1: Create VMI with Custom CPU Configuration
+Create Advanced CPU Configuration VMI
+Create a file named cpu-optimized-vmi.yaml:
+
+apiVersion: kubevirt.io/v1
+kind: VirtualMachineInstance
+metadata:
+  name: cpu-optimized-vmi
+  namespace: vmi-lab
+  labels:
+    app: cpu-optimized-vm
+    tier: performance
+spec:
+  domain:
+    cpu:
+      cores: 2
+      sockets: 1
+      threads: 2
+      model: host-model
+      features:
+      - name: apic
+        policy: require
+      - name: hypervisor
+        policy: require
+    memory:
+      guest: 2Gi
+      hugepages:
+        pageSize: 2Mi
+    devices:
+      disks:
+      - name: containerdisk
+        disk:
+          bus: virtio
+      - name: cloudinitdisk
+        disk:
+          bus: virtio
+      interfaces:
+      - name: default
+        masquerade: {}
+    machine:
+      type: q35
+    resources:
+      requests:
+        memory: 2Gi
+        cpu: 2
+      limits:
+        memory: 2Gi
+        cpu: 2
+  networks:
+  - name: default
+    pod: {}
+  volumes:
+  - name: containerdisk
+    containerDisk:
+      image: quay.io/kubevirt/fedora-cloud-container-disk-demo
+  - name: cloudinitdisk
+    cloudInitNoCloud:
+      userData: |
+        #cloud-config
+        user: fedora
+        password: fedora
+        chpasswd: { expire: False }
+        ssh_pwauth: True
+        runcmd:
+        - echo "CPU optimized VM started" > /tmp/startup.log
+Deploy CPU-Optimized VMI
+oc apply -f cpu-optimized-vmi.yaml
+Subtask 3.2: Create VMI with Persistent Storage
+Create Persistent Volume Claim
+Create a file named vmi-pvc.yaml:
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vmi-disk-pvc
+  namespace: vmi-lab
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: gp2
+Apply PVC Configuration
+oc apply -f vmi-pvc.yaml
+Create VMI with Persistent Storage
+Create a file named storage-vmi.yaml:
+
+apiVersion: kubevirt.io/v1
+kind: VirtualMachineInstance
+metadata:
+  name: storage-vmi
+  namespace: vmi-lab
+  labels:
+    app: storage-vm
+    storage-type: persistent
+spec:
+  domain:
+    cpu:
+      cores: 1
+    memory:
+      guest: 2Gi
+    devices:
+      disks:
+      - name: pvcdisk
+        disk:
+          bus: virtio
+      - name: containerdisk
+        disk:
+          bus: virtio
+      - name: cloudinitdisk
+        disk:
+          bus: virtio
+      interfaces:
+      - name: default
+        masquerade: {}
+    machine:
+      type: q35
+  networks:
+  - name: default
+    pod: {}
+  volumes:
+  - name: pvcdisk
+    persistentVolumeClaim:
+      claimName: vmi-disk-pvc
+  - name: containerdisk
+    containerDisk:
+      image: quay.io/kubevirt/fedora-cloud-container-disk-demo
+  - name: cloudinitdisk
+    cloudInitNoCloud:
+      userData: |
+        #cloud-config
+        user: fedora
+        password: fedora
+        chpasswd: { expire: False }
+        ssh_pwauth: True
+        runcmd:
+        - mkfs.ext4 /dev/vda
+        - mkdir -p /mnt/persistent
+        - mount /dev/vda /mnt/persistent
+        - echo "Persistent storage mounted" > /mnt/persistent/test.txt
+Deploy Storage VMI
+oc apply -f storage-vmi.yaml
+Subtask 3.3: Create Memory-Optimized VMI
+Create Memory-Optimized Configuration
+Create a file named memory-optimized-vmi.yaml:
+
+apiVersion: kubevirt.io/v1
+kind: VirtualMachineInstance
+metadata:
+  name: memory-optimized-vmi
+  namespace: vmi-lab
+  labels:
+    app: memory-optimized-vm
+    workload-type: memory-intensive
+spec:
+  domain:
+    cpu:
+      cores: 1
+    memory:
+      guest: 4Gi
+      hugepages:
+        pageSize: 1Gi
+    devices:
+      disks:
+      - name: containerdisk
+        disk:
+          bus: virtio
+      - name: cloudinitdisk
+        disk:
+          bus: virtio
+      interfaces:
+      - name: default
+        masquerade: {}
+    machine:
+      type: q35
+    resources:
+      requests:
+        memory: 4Gi
+        cpu: 1
+      limits:
+        memory: 4Gi
+        cpu: 1
+  networks:
+  - name: default
+    pod: {}
+  volumes:
+  - name: containerdisk
+    containerDisk:
+      image: quay.io/kubevirt/fedora-cloud-container-disk-demo
+  - name: cloudinitdisk
+    cloudInitNoCloud:
+      userData: |
+        #cloud-config
+        user: fedora
+        password: fedora
+        chpasswd: { expire: False }
+        ssh_pwauth: True
+        runcmd:
+        - echo "Memory optimized VM with 4GB RAM" > /tmp/memory-info.txt
+        - free -h >> /tmp/memory-info.txt
+Deploy Memory-Optimized VMI
+oc apply -f memory-optimized-vmi.yaml
+Task 4: Deploy and Monitor VM Lifecycle
+Subtask 4.1: Monitor VMI Deployment Status
+Check All VMI Status
+oc get vmi -o wide
+Monitor VMI Events in Real-time
+oc get events -w --field-selector involvedObject.kind=VirtualMachineInstance
+Check Resource Utilization
+oc top pods -l kubevirt.io/domain
+Subtask 4.2: Access and Interact with VMIs
+Connect to VMI Console
+virtctl console basic-vmi
+Note: Use Ctrl+] to exit the console.
+
+Check VMI Network Connectivity
+oc get vmi basic-vmi -o jsonpath='{.status.interfaces[0].ipAddress}'
+SSH into VMI (if SSH is configured)
+virtctl ssh fedora@storage-vmi
+Subtask 4.3: VMI Lifecycle Management
+Pause a VMI
+virtctl pause vmi basic-vmi
+Unpause a VMI
+virtctl unpause vmi basic-vmi
+Restart a VMI
+virtctl restart basic-vmi
+Stop a VMI
+virtctl stop basic-vmi
+Subtask 4.4: Advanced Monitoring and Troubleshooting
+Create Monitoring Script
+Create a file named monitor-vmis.sh:
+
+#!/bin/bash
+
+echo "=== VMI Status Overview ==="
+oc get vmi -o custom-columns=NAME:.metadata.name,STATUS:.status.phase,NODE:.status.nodeName,IP:.status.interfaces[0].ipAddress
+
+echo -e "\n=== VMI Resource Usage ==="
+for vmi in $(oc get vmi -o jsonpath='{.items[*].metadata.name}'); do
+    echo "VMI: $vmi"
+    pod=$(oc get pods -l kubevirt.io/created-by=$vmi -o jsonpath='{.items[0].metadata.name}')
+    if [ ! -z "$pod" ]; then
+        oc top pod $pod 2>/dev/null || echo "  Resource metrics not available"
+    fi
+    echo ""
+done
+
+echo "=== Recent VMI Events ==="
+oc get events --field-selector involvedObject.kind=VirtualMachineInstance --sort-by='.lastTimestamp' | tail -10
+Make Script Executable and Run
+chmod +x monitor-vmis.sh
+./monitor-vmis.sh
+Create VMI Health Check
+Create a file named vmi-health-check.yaml:
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vmi-health-check
+  namespace: vmi-lab
+data:
+  health-check.sh: |
+    #!/bin/bash
+    
+    check_vmi_health() {
+        local vmi_name=$1
+        echo "Checking health of VMI: $vmi_name"
+        
+        # Check VMI status
+        status=$(oc get vmi $vmi_name -o jsonpath='{.status.phase}' 2>/dev/null)
+        if [ "$status" = "Running" ]; then
+            echo "  ✓ VMI is running"
+        else
+            echo "  ✗ VMI status: $status"
+            return 1
+        fi
+        
+        # Check associated pod
+        pod=$(oc get pods -l kubevirt.io/created-by=$vmi_name -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+        if [ ! -z "$pod" ]; then
+            pod_status=$(oc get pod $pod -o jsonpath='{.status.phase}')
+            echo "  ✓ Associated pod ($pod) status: $pod_status"
+        else
+            echo "  ✗ No associated pod found"
+            return 1
+        fi
+        
+        return 0
+    }
+    
+    # Check all VMIs
+    for vmi in $(oc get vmi -o jsonpath='{.items[*].metadata.name}'); do
+        check_vmi_health $vmi
+        echo ""
+    done
+Apply Health Check ConfigMap
+oc apply -f vmi-health-check.yaml
+Task 5: Advanced VMI Configurations and Best Practices
+Subtask 5.1: Create VMI with Network Policies
+Create Network Policy for VMI
+Create a file named vmi-network-policy.yaml:
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vmi-network-policy
+  namespace: vmi-lab
+spec:
+  podSelector:
+    matchLabels:
+      kubevirt.io/domain: secure-vmi
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          access: allowed
+    ports:
+    - protocol: TCP
+      port: 22
+  egress:
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 53
+    - protocol: UDP
+      port: 53
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 80
+    - protocol: TCP
+      port: 443
+Create Secure VMI
+Create a file named secure-vmi.yaml:
+
+apiVersion: kubevirt.io/v1
+kind: VirtualMachineInstance
+metadata:
+  name: secure-vmi
+  namespace: vmi-lab
+  labels:
+    app: secure-vm
+    security-level: high
+spec:
+  domain:
+    cpu:
+      cores: 1
+    memory:
+      guest: 1Gi
+    devices:
+      disks:
+      - name: containerdisk
+        disk:
+          bus: virtio
+      - name: cloudinitdisk
+        disk:
+          bus: virtio
+      interfaces:
+      - name: default
+        masquerade: {}
+    machine:
+      type: q35
+  networks:
+  - name: default
+    pod: {}
+  volumes:
+  - name: containerdisk
+    containerDisk:
+      image: quay.io/kubevirt/fedora-cloud-container-disk-demo
+  - name: cloudinitdisk
+    cloudInitNoCloud:
+      userData: |
+        #cloud-config
+        user: fedora
+        password: secure123
+        chpasswd: { expire: False }
+        ssh_pwauth: True
+        runcmd:
+        - systemctl enable sshd
+        - systemctl start sshd
+        - echo "Secure VMI configured" > /tmp/security.log
+Apply Network Policy and Secure VMI
+oc apply -f vmi-network-policy.yaml
+oc apply -f secure-vmi.yaml
+Subtask 5.2: Implement VMI Resource Quotas
+Create Resource Quota for VMI Namespace
+Create a file named vmi-resource-quota.yaml:
+
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: vmi-quota
+  namespace: vmi-lab
+spec:
+  hard:
+    requests.cpu: "8"
+    requests.memory: 16Gi
+    limits.cpu: "8"
+    limits.memory: 16Gi
+    persistentvolumeclaims: "10"
+    count/virtualmachineinstances.kubevirt.io: "5"
+Apply Resource Quota
+oc apply -f vmi-resource-quota.yaml
+Verify Resource Quota
+oc describe quota vmi-quota
+Subtask 5.3: Create VMI with Custom Scheduling
+Create VMI with Node Affinity
+Create a file named scheduled-vmi.yaml:
+
+apiVersion: kubevirt.io/v1
+kind: VirtualMachineInstance
+metadata:
+  name: scheduled-vmi
+  namespace: vmi-lab
+  labels:
+    app: scheduled-vm
+    scheduling: custom
+spec:
+  domain:
+    cpu:
+      cores: 1
+    memory:
+      guest: 1Gi
+    devices:
+      disks:
+      - name: containerdisk
+        disk:
+          bus: virtio
+      - name: cloudinitdisk
+        disk:
+          bus: virtio
+      interfaces:
+      - name: default
+        masquerade: {}
+    machine:
+      type: q35
+  networks:
+  - name: default
+    pod: {}
+  volumes:
+  - name: containerdisk
+    containerDisk:
+      image: quay.io/kubevirt/cirros-container-disk-demo
+  - name: cloudinitdisk
+    cloudInitNoCloud:
+      userData: |
+        #cloud-config
+        password: fedora
+        chpasswd: { expire: False }
+        ssh_pwauth: True
+  affinity:
+    nodeAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        preference:
+          matchExpressions:
+          - key: node-role.kubernetes.io/worker
+            operator: Exists
+Deploy Scheduled VMI
+oc apply -f scheduled-vmi.yaml
+Troubleshooting Common Issues
+Issue 1: VMI Stuck in Scheduling State
+Symptoms: VMI remains in "Scheduling" phase
+
+Solution:
+
+# Check node resources
+oc describe nodes | grep -A 10 "Allocated resources"
+
+# Check for resource constraints
+oc describe vmi <vmi-name> | grep -A 10 Events
+
+# Verify storage class availability
+oc get storageclass
+Issue 2: VMI Pod CrashLoopBackOff
+Symptoms: Associated pod keeps restarting
+
+Solution:
+
+# Check pod logs
+pod_name=$(oc get pods -l kubevirt.io/created-by=<vmi-name> -o jsonpath='{.items[0].metadata.name}')
+oc logs $pod_name
+
+# Check VMI events
+oc describe vmi <vmi-name>
+
+# Verify image availability
+oc run test-pod --image=<container-disk-image> --rm -it --restart=Never -- echo "Image test"
+Issue 3: Network Connectivity Issues
+Symptoms: Cannot access VMI or VMI cannot reach external resources
+
+Solution:
+
+# Check VMI network configuration
+oc get vmi <vmi-name> -o yaml | grep -A 20 networks
+
+# Verify network policies
+oc get networkpolicy
+
+# Test connectivity from another pod
+oc run test-connectivity --image=busybox --rm -it --restart=Never -- ping <vmi-ip>
+Lab Validation and Testing
+Validation Script
+Create a comprehensive validation script named validate-lab.sh:
+
+#!/bin/bash
+
+echo "=== Lab 3 Validation Script ==="
+echo "Checking VMI deployment and configuration..."
+
+# Function to check VMI status
+check_vmi() {
+    local vmi_name=$1
+    local expected_status="Running"
+    
+    echo -n "Checking VMI $vmi_name: "
+    status=$(oc get vmi $vmi_name -o jsonpath='{.status.phase}' 2>/dev/null)
+    
+    if [ "$status" = "$expected_status" ]; then
+        echo "✓ PASS (Status: $status)"
+        return 0
+    else
+        echo "✗ FAIL (Status: $status, Expected: $expected_status)"
+        return 1
+    fi
+}
+
+# Function to check resource allocation
+check_resources() {
+    local vmi_name=$1
+    local expected_cpu=$2
+    local expected_memory=$3
+    
+    echo -n "Checking $vmi_name resources: "
+    cpu=$(oc get vmi $vmi_name -o jsonpath='{.spec.domain.cpu.cores}' 2>/dev/null)
+    memory=$(oc get vmi $vmi_name -o jsonpath='{.spec.domain.memory.guest}' 2>/dev/null)
+    
+    if [ "$cpu" = "$expected_cpu" ] && [ "$memory" = "$expected_memory" ]; then
+        echo "✓ PASS (CPU: $cpu, Memory: $memory)"
+        return 0
+    else
+        echo "✗ FAIL (CPU: $cpu/$expected_cpu, Memory: $memory/$expected_memory)"
+        return 1
+    fi
+}
+
+# Validation tests
+echo -e "\n1. Basic VMI Tests:"
+check_vmi "basic-vmi"
+check_resources "basic-vmi" "1" "1Gi"
+
+echo -e "\n2. CPU-Optimized VMI Tests:"
+check_vmi "cpu-optimized-vmi"
+check_resources "cpu-optimized-vmi" "2" "2Gi"
+
+echo -e "\n3. Storage VMI Tests:"
+check_vmi "storage-vmi"
+echo -n "Checking PVC: "
+pvc_status=$(oc get pvc vmi-disk-pvc -o jsonpath='{.status.phase}' 2>/dev/null)
+if [ "$pvc_status" = "Bound" ]; then
+    echo "✓ PASS (PVC Status: $pvc_status)"
+else
+    echo "✗ FAIL (PVC Status: $pvc_status)"
+fi
+
+echo -e "\n4. Memory-Optimized VMI Tests:"
+check_vmi "memory-optimized-vmi"
+check_resources "memory-optimized-vmi" "1" "4Gi"
+
+echo -e "\n5. Secure VMI Tests:"
+check_vmi "secure-vmi"
+
+echo -e "\n6. Resource Quota Tests:"
+echo -n "Checking resource quota: "
+quota_status=$(oc get quota vmi-quota -o jsonpath='{.status}' 2>/dev/null)
+if [ ! -z "$quota_status" ]; then
+    echo "✓ PASS (Quota configured)"
+else
+    echo "✗ FAIL (Quota not found)"
+fi
+
+echo -e "\n=== Validation Complete ==="
+Make the script executable and run it:
+
+chmod +x validate-lab.sh
+./validate-lab.sh
+Cleanup Instructions
+When you're finished with the lab, clean up the resources:
+
+# Delete all VMIs
+oc delete vmi --all -n vmi-lab
+
+# Delete PVCs
+oc delete pvc --all -n vmi-lab
+
+# Delete ConfigMaps
+oc delete configmap --all -n vmi-lab
+
+# Delete Network Policies
+oc delete networkpolicy --all -n vmi-lab
+
+# Delete Resource Quota
+oc delete quota --all -n vmi-lab
+
+# Delete the project
+oc delete project vmi-lab
+Conclusion
+In this comprehensive lab, you have successfully:
+
+Created multiple Virtual Machine Instances using YAML manifests with different configurations
+Configured CPU specifications including cores, sockets, threads, and CPU features for performance optimization
+Implemented memory management with standard and hugepage configurations for different workload requirements
+Set up persistent storage using PVCs to provide durable storage for VMIs
+Deployed and monitored VM lifecycle operations including start, stop, pause, and restart functions
+Implemented advanced features such as network policies, resource quotas, and custom scheduling
+Developed monitoring and troubleshooting skills for VMI management in production environments
+Key Takeaways
+Resource Planning: Proper CPU, memory, and storage configuration is crucial for VMI performance
+Lifecycle Management: Understanding VMI states and transitions helps in effective management
+Security Considerations: Network policies and resource quotas provide essential security boundaries
+Monitoring Importance: Continuous monitoring ensures optimal VMI performance and availability
+Troubleshooting Skills: Systematic approaches to problem-solving reduce downtime and improve reliability
+Real-World Applications
+The skills learned in this lab are directly applicable to:
+
+Enterprise virtualization deployments on OpenShift
+Cloud migration projects requiring VM workloads
+Development and testing environments with isolated VM instances
+Compliance and security implementations requiring controlled VM access
+Resource optimization in multi-tenant OpenShift environments
+This lab provides the foundation for the Red Hat Certified Specialist in OpenShift Virtualization certification and prepares you for managing production VMI workloads in enterprise environments.

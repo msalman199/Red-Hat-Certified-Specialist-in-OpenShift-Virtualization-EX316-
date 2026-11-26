@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: vmi-quota
+  namespace: vmi-lab
+spec:
+  hard:
+    requests.cpu: "8"
+    requests.memory: 16Gi
+    limits.cpu: "8"
+    limits.memory: 16Gi
+    persistentvolumeclaims: "10"
+    count/virtualmachineinstances.kubevirt.io: "5"
