@@ -1,0 +1,8 @@
+<domainsnapshot>
+  <name>pre-update-snapshot</name>
+  <description>Snapshot taken before system updates</description>
+  <memory snapshot='internal'/>
+  <disks>
+    <disk name='vda' snapshot='internal'/>
+  </disks>
+</domainsnapshot>

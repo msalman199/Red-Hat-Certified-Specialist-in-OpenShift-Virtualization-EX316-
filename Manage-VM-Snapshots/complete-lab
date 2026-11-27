@@ -1,0 +1,741 @@
+Video
+Lab Material
+Lab 10: Manage VM Snapshots
+Objectives
+By the end of this lab, students will be able to:
+
+Create and manage VM snapshots using command-line interface (CLI) tools
+Implement rollback and recovery procedures using VM snapshots
+Configure automated snapshot creation through scheduled tasks
+Understand snapshot lifecycle management and best practices
+Troubleshoot common snapshot-related issues in virtualized environments
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Linux command-line operations
+Familiarity with virtualization concepts and terminology
+Knowledge of QEMU/KVM virtualization stack
+Understanding of file systems and storage concepts
+Basic scripting knowledge (bash/shell scripting)
+Experience with systemd services and cron jobs
+Lab Environment Setup
+Ready-to-Use Cloud Machines: Al Nafi provides pre-configured Linux-based cloud machines with all necessary tools installed. Simply click Start Lab to access your environment - no need to build your own VM infrastructure.
+
+Your lab environment includes:
+
+CentOS Stream 9 or RHEL 9 compatible system
+QEMU/KVM hypervisor pre-installed
+libvirt management tools configured
+Sample virtual machines ready for snapshot operations
+All required CLI tools and utilities
+Task 1: Create VM Snapshots Using CLI
+Subtask 1.1: Verify Lab Environment and VM Status
+First, let's verify that our virtualization environment is properly configured and identify available virtual machines.
+
+Check libvirt service status:
+sudo systemctl status libvirtd
+List all available virtual machines:
+sudo virsh list --all
+Verify VM storage information:
+sudo virsh domblklist test-vm
+Subtask 1.2: Create Your First VM Snapshot
+Now we'll create snapshots of our test virtual machine using different methods.
+
+Create a basic snapshot with description:
+sudo virsh snapshot-create-as test-vm \
+  --name "baseline-snapshot" \
+  --description "Initial clean state before configuration changes" \
+  --atomic
+Verify snapshot creation:
+sudo virsh snapshot-list test-vm
+View detailed snapshot information:
+sudo virsh snapshot-info test-vm baseline-snapshot
+Subtask 1.3: Create Advanced Snapshots with Metadata
+Let's create more sophisticated snapshots with additional metadata and options.
+
+Create snapshot with custom XML configuration:
+cat > snapshot-config.xml << 'EOF'
+<domainsnapshot>
+  <name>pre-update-snapshot</name>
+  <description>Snapshot taken before system updates</description>
+  <memory snapshot='internal'/>
+  <disks>
+    <disk name='vda' snapshot='internal'/>
+  </disks>
+</domainsnapshot>
+EOF
+Apply the custom snapshot configuration:
+sudo virsh snapshot-create test-vm snapshot-config.xml
+Create external snapshot for better performance:
+sudo virsh snapshot-create-as test-vm \
+  --name "external-snapshot-$(date +%Y%m%d-%H%M%S)" \
+  --description "External snapshot for production workload" \
+  --disk-only \
+  --atomic
+Subtask 1.4: Manage Multiple Snapshots
+Learn to work with multiple snapshots and understand their relationships.
+
+Create a series of snapshots:
+for i in {1..3}; do
+  sudo virsh snapshot-create-as test-vm \
+    --name "checkpoint-$i" \
+    --description "Checkpoint $i - $(date)" \
+    --atomic
+  echo "Created checkpoint-$i"
+  sleep 2
+done
+Display snapshot tree structure:
+sudo virsh snapshot-list test-vm --tree
+Get current snapshot information:
+sudo virsh snapshot-current test-vm
+Task 2: Test Rollback and Recovery Using Snapshots
+Subtask 2.1: Prepare Test Environment for Rollback
+Before testing rollback procedures, let's make some changes to our VM that we can later revert.
+
+Start the virtual machine if not running:
+sudo virsh start test-vm
+Connect to VM and make test changes (assuming SSH access):
+# Connect to your VM (replace with actual IP)
+ssh user@vm-ip-address
+
+# Create test files and configurations
+echo "Original configuration" > /tmp/test-config.txt
+echo "Test data before snapshot" > /tmp/important-data.txt
+sudo systemctl status sshd > /tmp/service-status.txt
+Create a snapshot after making changes:
+sudo virsh snapshot-create-as test-vm \
+  --name "after-changes" \
+  --description "Snapshot after making test modifications" \
+  --atomic
+Subtask 2.2: Perform Snapshot Rollback Operations
+Now let's test various rollback scenarios to understand recovery procedures.
+
+Make additional changes that we'll want to revert:
+# Connect to VM again and make "problematic" changes
+ssh user@vm-ip-address
+
+# Simulate problematic changes
+echo "Corrupted configuration" > /tmp/test-config.txt
+rm /tmp/important-data.txt
+echo "This change will be reverted" > /tmp/bad-change.txt
+Shutdown VM gracefully before rollback:
+sudo virsh shutdown test-vm
+
+# Wait for shutdown to complete
+while sudo virsh list --state-running | grep -q test-vm; do
+  echo "Waiting for VM to shutdown..."
+  sleep 2
+done
+Revert to previous snapshot:
+sudo virsh snapshot-revert test-vm after-changes
+Verify rollback success:
+sudo virsh start test-vm
+
+# Wait for VM to boot
+sleep 30
+
+# Verify changes were reverted
+ssh user@vm-ip-address "cat /tmp/test-config.txt"
+ssh user@vm-ip-address "ls -la /tmp/important-data.txt"
+Subtask 2.3: Advanced Recovery Scenarios
+Let's explore more complex recovery scenarios and snapshot management.
+
+Create recovery script for automated rollback:
+cat > vm-recovery.sh << 'EOF'
+#!/bin/bash
+
+VM_NAME="test-vm"
+SNAPSHOT_NAME="$1"
+
+if [ -z "$SNAPSHOT_NAME" ]; then
+    echo "Usage: $0 <snapshot-name>"
+    echo "Available snapshots:"
+    sudo virsh snapshot-list "$VM_NAME" --name
+    exit 1
+fi
+
+echo "Starting recovery process for VM: $VM_NAME"
+echo "Target snapshot: $SNAPSHOT_NAME"
+
+# Check if VM is running
+if sudo virsh list --state-running | grep -q "$VM_NAME"; then
+    echo "Shutting down VM..."
+    sudo virsh shutdown "$VM_NAME"
+    
+    # Wait for shutdown
+    timeout=60
+    while sudo virsh list --state-running | grep -q "$VM_NAME" && [ $timeout -gt 0 ]; do
+        sleep 2
+        timeout=$((timeout-2))
+    done
+    
+    if [ $timeout -le 0 ]; then
+        echo "Force stopping VM..."
+        sudo virsh destroy "$VM_NAME"
+    fi
+fi
+
+# Perform rollback
+echo "Reverting to snapshot: $SNAPSHOT_NAME"
+if sudo virsh snapshot-revert "$VM_NAME" "$SNAPSHOT_NAME"; then
+    echo "Rollback successful!"
+    echo "Starting VM..."
+    sudo virsh start "$VM_NAME"
+    echo "Recovery completed successfully!"
+else
+    echo "Rollback failed!"
+    exit 1
+fi
+EOF
+
+chmod +x vm-recovery.sh
+Test the recovery script:
+./vm-recovery.sh baseline-snapshot
+Verify recovery with detailed checks:
+# Create verification script
+cat > verify-recovery.sh << 'EOF'
+#!/bin/bash
+
+VM_NAME="test-vm"
+VM_IP="vm-ip-address"  # Replace with actual IP
+
+echo "=== VM Recovery Verification ==="
+echo "VM Status: $(sudo virsh list | grep $VM_NAME | awk '{print $3}')"
+echo "Current Snapshot: $(sudo virsh snapshot-current $VM_NAME --name 2>/dev/null || echo 'None')"
+
+# Wait for VM to be accessible
+echo "Waiting for VM to be accessible..."
+timeout=120
+while ! ping -c 1 "$VM_IP" >/dev/null 2>&1 && [ $timeout -gt 0 ]; do
+    sleep 2
+    timeout=$((timeout-2))
+done
+
+if [ $timeout -gt 0 ]; then
+    echo "VM is accessible via network"
+    echo "Verifying file system state..."
+    ssh -o ConnectTimeout=10 user@"$VM_IP" "ls -la /tmp/ | head -10"
+else
+    echo "VM is not accessible via network"
+fi
+EOF
+
+chmod +x verify-recovery.sh
+./verify-recovery.sh
+Task 3: Automate Snapshot Creation via Scheduled Tasks
+Subtask 3.1: Create Automated Snapshot Scripts
+Let's create comprehensive scripts for automated snapshot management.
+
+Create main snapshot automation script:
+sudo mkdir -p /opt/vm-snapshots
+sudo cat > /opt/vm-snapshots/auto-snapshot.sh << 'EOF'
+#!/bin/bash
+
+# VM Snapshot Automation Script
+# Usage: auto-snapshot.sh <vm-name> [retention-days]
+
+VM_NAME="$1"
+RETENTION_DAYS="${2:-7}"
+LOG_FILE="/var/log/vm-snapshots.log"
+SNAPSHOT_PREFIX="auto"
+
+# Logging function
+log_message() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | sudo tee -a "$LOG_FILE"
+}
+
+# Validate input
+if [ -z "$VM_NAME" ]; then
+    log_message "ERROR: VM name not provided"
+    echo "Usage: $0 <vm-name> [retention-days]"
+    exit 1
+fi
+
+# Check if VM exists
+if ! sudo virsh list --all | grep -q "$VM_NAME"; then
+    log_message "ERROR: VM '$VM_NAME' not found"
+    exit 1
+fi
+
+# Generate snapshot name with timestamp
+SNAPSHOT_NAME="${SNAPSHOT_PREFIX}-$(date +%Y%m%d-%H%M%S)"
+
+log_message "Starting automated snapshot for VM: $VM_NAME"
+
+# Create snapshot
+if sudo virsh snapshot-create-as "$VM_NAME" \
+    --name "$SNAPSHOT_NAME" \
+    --description "Automated snapshot created on $(date)" \
+    --atomic; then
+    log_message "SUCCESS: Snapshot '$SNAPSHOT_NAME' created for VM '$VM_NAME'"
+else
+    log_message "ERROR: Failed to create snapshot for VM '$VM_NAME'"
+    exit 1
+fi
+
+# Cleanup old snapshots
+log_message "Cleaning up snapshots older than $RETENTION_DAYS days"
+
+# Get list of automated snapshots
+OLD_SNAPSHOTS=$(sudo virsh snapshot-list "$VM_NAME" --name | grep "^${SNAPSHOT_PREFIX}-" | head -n -"$RETENTION_DAYS")
+
+for snapshot in $OLD_SNAPSHOTS; do
+    if [ -n "$snapshot" ]; then
+        if sudo virsh snapshot-delete "$VM_NAME" "$snapshot"; then
+            log_message "SUCCESS: Deleted old snapshot '$snapshot'"
+        else
+            log_message "ERROR: Failed to delete snapshot '$snapshot'"
+        fi
+    fi
+done
+
+log_message "Automated snapshot process completed for VM: $VM_NAME"
+EOF
+
+sudo chmod +x /opt/vm-snapshots/auto-snapshot.sh
+Create snapshot management utility:
+sudo cat > /opt/vm-snapshots/snapshot-manager.sh << 'EOF'
+#!/bin/bash
+
+# VM Snapshot Manager
+# Provides various snapshot management functions
+
+SCRIPT_DIR="/opt/vm-snapshots"
+LOG_FILE="/var/log/vm-snapshots.log"
+
+show_usage() {
+    echo "VM Snapshot Manager"
+    echo "Usage: $0 <command> [options]"
+    echo ""
+    echo "Commands:"
+    echo "  list <vm-name>              - List all snapshots for VM"
+    echo "  create <vm-name> [name]     - Create snapshot"
+    echo "  delete <vm-name> <snapshot> - Delete specific snapshot"
+    echo "  revert <vm-name> <snapshot> - Revert to snapshot"
+    echo "  cleanup <vm-name> [days]    - Cleanup old snapshots"
+    echo "  status <vm-name>            - Show VM and snapshot status"
+}
+
+list_snapshots() {
+    local vm_name="$1"
+    echo "=== Snapshots for VM: $vm_name ==="
+    sudo virsh snapshot-list "$vm_name" --tree
+    echo ""
+    echo "=== Snapshot Details ==="
+    sudo virsh snapshot-list "$vm_name" --name | while read snapshot; do
+        if [ -n "$snapshot" ]; then
+            echo "Snapshot: $snapshot"
+            sudo virsh snapshot-info "$vm_name" "$snapshot" | grep -E "(Creation Time|Description)"
+            echo "---"
+        fi
+    done
+}
+
+create_snapshot() {
+    local vm_name="$1"
+    local snapshot_name="${2:-manual-$(date +%Y%m%d-%H%M%S)}"
+    
+    echo "Creating snapshot '$snapshot_name' for VM '$vm_name'..."
+    if sudo virsh snapshot-create-as "$vm_name" \
+        --name "$snapshot_name" \
+        --description "Manual snapshot created on $(date)" \
+        --atomic; then
+        echo "SUCCESS: Snapshot created"
+    else
+        echo "ERROR: Failed to create snapshot"
+        return 1
+    fi
+}
+
+delete_snapshot() {
+    local vm_name="$1"
+    local snapshot_name="$2"
+    
+    if [ -z "$snapshot_name" ]; then
+        echo "ERROR: Snapshot name required"
+        return 1
+    fi
+    
+    echo "Deleting snapshot '$snapshot_name' from VM '$vm_name'..."
+    if sudo virsh snapshot-delete "$vm_name" "$snapshot_name"; then
+        echo "SUCCESS: Snapshot deleted"
+    else
+        echo "ERROR: Failed to delete snapshot"
+        return 1
+    fi
+}
+
+revert_snapshot() {
+    local vm_name="$1"
+    local snapshot_name="$2"
+    
+    if [ -z "$snapshot_name" ]; then
+        echo "ERROR: Snapshot name required"
+        return 1
+    fi
+    
+    echo "Reverting VM '$vm_name' to snapshot '$snapshot_name'..."
+    
+    # Check if VM is running
+    if sudo virsh list --state-running | grep -q "$vm_name"; then
+        echo "Shutting down VM..."
+        sudo virsh shutdown "$vm_name"
+        sleep 10
+    fi
+    
+    if sudo virsh snapshot-revert "$vm_name" "$snapshot_name"; then
+        echo "SUCCESS: Reverted to snapshot"
+        echo "Starting VM..."
+        sudo virsh start "$vm_name"
+    else
+        echo "ERROR: Failed to revert snapshot"
+        return 1
+    fi
+}
+
+show_status() {
+    local vm_name="$1"
+    
+    echo "=== VM Status ==="
+    sudo virsh list --all | grep "$vm_name"
+    echo ""
+    echo "=== Current Snapshot ==="
+    sudo virsh snapshot-current "$vm_name" --name 2>/dev/null || echo "No current snapshot"
+    echo ""
+    echo "=== Snapshot Count ==="
+    echo "Total snapshots: $(sudo virsh snapshot-list "$vm_name" --name | wc -l)"
+}
+
+# Main command processing
+case "$1" in
+    list)
+        list_snapshots "$2"
+        ;;
+    create)
+        create_snapshot "$2" "$3"
+        ;;
+    delete)
+        delete_snapshot "$2" "$3"
+        ;;
+    revert)
+        revert_snapshot "$2" "$3"
+        ;;
+    status)
+        show_status "$2"
+        ;;
+    cleanup)
+        "$SCRIPT_DIR/auto-snapshot.sh" "$2" "${3:-7}"
+        ;;
+    *)
+        show_usage
+        exit 1
+        ;;
+esac
+EOF
+
+sudo chmod +x /opt/vm-snapshots/snapshot-manager.sh
+Subtask 3.2: Configure Scheduled Snapshot Tasks
+Now let's set up automated scheduling using systemd timers and cron jobs.
+
+Create systemd service for snapshot automation:
+sudo cat > /etc/systemd/system/vm-snapshot@.service << 'EOF'
+[Unit]
+Description=VM Snapshot Service for %i
+After=libvirtd.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/vm-snapshots/auto-snapshot.sh %i 7
+User=root
+StandardOutput=journal
+StandardError=journal
+EOF
+Create systemd timer for regular snapshots:
+sudo cat > /etc/systemd/system/vm-snapshot@.timer << 'EOF'
+[Unit]
+Description=VM Snapshot Timer for %i
+Requires=vm-snapshot@%i.service
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+Enable and start the timer for our test VM:
+sudo systemctl daemon-reload
+sudo systemctl enable vm-snapshot@test-vm.timer
+sudo systemctl start vm-snapshot@test-vm.timer
+Verify timer status:
+sudo systemctl status vm-snapshot@test-vm.timer
+sudo systemctl list-timers | grep vm-snapshot
+Subtask 3.3: Create Advanced Scheduling Options
+Let's create more sophisticated scheduling options for different scenarios.
+
+Create hourly snapshot cron job:
+sudo cat > /etc/cron.d/vm-snapshots << 'EOF'
+# VM Snapshot Automation
+# Create snapshots every 4 hours during business hours
+0 8,12,16,20 * * * root /opt/vm-snapshots/auto-snapshot.sh test-vm 24 >/dev/null 2>&1
+
+# Weekly cleanup of old snapshots
+0 2 * * 0 root /opt/vm-snapshots/snapshot-manager.sh cleanup test-vm 30 >/dev/null 2>&1
+EOF
+Create backup verification script:
+sudo cat > /opt/vm-snapshots/verify-snapshots.sh << 'EOF'
+#!/bin/bash
+
+# Snapshot Verification Script
+VM_NAME="$1"
+LOG_FILE="/var/log/vm-snapshot-verification.log"
+
+log_message() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | sudo tee -a "$LOG_FILE"
+}
+
+if [ -z "$VM_NAME" ]; then
+    echo "Usage: $0 <vm-name>"
+    exit 1
+fi
+
+log_message "Starting snapshot verification for VM: $VM_NAME"
+
+# Check snapshot integrity
+SNAPSHOT_COUNT=$(sudo virsh snapshot-list "$VM_NAME" --name | wc -l)
+log_message "Found $SNAPSHOT_COUNT snapshots"
+
+if [ "$SNAPSHOT_COUNT" -eq 0 ]; then
+    log_message "WARNING: No snapshots found for VM $VM_NAME"
+    exit 1
+fi
+
+# Verify recent snapshots
+RECENT_SNAPSHOTS=$(sudo virsh snapshot-list "$VM_NAME" --name | head -5)
+
+for snapshot in $RECENT_SNAPSHOTS; do
+    if [ -n "$snapshot" ]; then
+        # Check snapshot metadata
+        if sudo virsh snapshot-info "$VM_NAME" "$snapshot" >/dev/null 2>&1; then
+            log_message "SUCCESS: Snapshot '$snapshot' is valid"
+        else
+            log_message "ERROR: Snapshot '$snapshot' appears corrupted"
+        fi
+    fi
+done
+
+# Check disk space usage
+SNAPSHOT_SIZE=$(sudo virsh domblklist "$VM_NAME" | grep -v "^Target" | awk '{print $2}' | xargs -I {} du -sh {} 2>/dev/null | awk '{sum+=$1} END {print sum}')
+log_message "Total snapshot storage usage: ${SNAPSHOT_SIZE:-Unknown}"
+
+log_message "Snapshot verification completed for VM: $VM_NAME"
+EOF
+
+sudo chmod +x /opt/vm-snapshots/verify-snapshots.sh
+Test the complete automation system:
+# Test manual snapshot creation
+sudo /opt/vm-snapshots/snapshot-manager.sh create test-vm test-manual
+
+# Test automated snapshot
+sudo /opt/vm-snapshots/auto-snapshot.sh test-vm 7
+
+# Test verification
+sudo /opt/vm-snapshots/verify-snapshots.sh test-vm
+
+# Check logs
+sudo tail -20 /var/log/vm-snapshots.log
+Subtask 3.4: Monitor and Maintain Snapshot Automation
+Create monitoring and maintenance procedures for the automated snapshot system.
+
+Create monitoring script:
+sudo cat > /opt/vm-snapshots/monitor-snapshots.sh << 'EOF'
+#!/bin/bash
+
+# Snapshot Monitoring Script
+ALERT_EMAIL="admin@example.com"  # Configure as needed
+LOG_FILE="/var/log/vm-snapshot-monitor.log"
+
+log_message() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | sudo tee -a "$LOG_FILE"
+}
+
+check_vm_snapshots() {
+    local vm_name="$1"
+    local max_age_hours="${2:-25}"  # Alert if no snapshot in 25 hours
+    
+    log_message "Checking snapshots for VM: $vm_name"
+    
+    # Get latest snapshot
+    latest_snapshot=$(sudo virsh snapshot-list "$vm_name" --name | head -1)
+    
+    if [ -z "$latest_snapshot" ]; then
+        log_message "ALERT: No snapshots found for VM $vm_name"
+        return 1
+    fi
+    
+    # Check snapshot age
+    snapshot_time=$(sudo virsh snapshot-info "$vm_name" "$latest_snapshot" | grep "Creation Time" | cut -d: -f2- | xargs)
+    snapshot_epoch=$(date -d "$snapshot_time" +%s 2>/dev/null)
+    current_epoch=$(date +%s)
+    
+    if [ -n "$snapshot_epoch" ]; then
+        age_hours=$(( (current_epoch - snapshot_epoch) / 3600 ))
+        
+        if [ "$age_hours" -gt "$max_age_hours" ]; then
+            log_message "ALERT: Latest snapshot for $vm_name is $age_hours hours old"
+            return 1
+        else
+            log_message "OK: Latest snapshot for $vm_name is $age_hours hours old"
+        fi
+    else
+        log_message "WARNING: Could not determine snapshot age for $vm_name"
+    fi
+    
+    return 0
+}
+
+# Monitor all VMs
+VMS_TO_MONITOR="test-vm"  # Add more VMs as needed
+
+for vm in $VMS_TO_MONITOR; do
+    if ! check_vm_snapshots "$vm"; then
+        log_message "Snapshot monitoring failed for VM: $vm"
+    fi
+done
+
+log_message "Snapshot monitoring completed"
+EOF
+
+sudo chmod +x /opt/vm-snapshots/monitor-snapshots.sh
+Add monitoring to cron:
+echo "0 */6 * * * root /opt/vm-snapshots/monitor-snapshots.sh >/dev/null 2>&1" | sudo tee -a /etc/cron.d/vm-snapshots
+Create maintenance script for cleanup:
+sudo cat > /opt/vm-snapshots/maintenance.sh << 'EOF'
+#!/bin/bash
+
+# Snapshot Maintenance Script
+LOG_FILE="/var/log/vm-snapshot-maintenance.log"
+
+log_message() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | sudo tee -a "$LOG_FILE"
+}
+
+# Rotate logs
+rotate_logs() {
+    local log_file="$1"
+    local max_size_mb="${2:-10}"
+    
+    if [ -f "$log_file" ]; then
+        size_mb=$(du -m "$log_file" | cut -f1)
+        if [ "$size_mb" -gt "$max_size_mb" ]; then
+            log_message "Rotating log file: $log_file"
+            sudo mv "$log_file" "${log_file}.old"
+            sudo touch "$log_file"
+        fi
+    fi
+}
+
+# Clean up old snapshots beyond retention policy
+cleanup_old_snapshots() {
+    local vm_name="$1"
+    local retention_days="${2:-30}"
+    
+    log_message "Cleaning up snapshots older than $retention_days days for VM: $vm_name"
+    
+    # This is a more aggressive cleanup for very old snapshots
+    sudo virsh snapshot-list "$vm_name" --name | while read snapshot; do
+        if [ -n "$snapshot" ] && [[ "$snapshot" == auto-* ]]; then
+            # Extract date from snapshot name (format: auto-YYYYMMDD-HHMMSS)
+            snapshot_date=$(echo "$snapshot" | sed 's/auto-\([0-9]\{8\}\).*/\1/')
+            if [ -n "$snapshot_date" ]; then
+                snapshot_epoch=$(date -d "$snapshot_date" +%s 2>/dev/null)
+                current_epoch=$(date +%s)
+                age_days=$(( (current_epoch - snapshot_epoch) / 86400 ))
+                
+                if [ "$age_days" -gt "$retention_days" ]; then
+                    log_message "Deleting old snapshot: $snapshot (age: $age_days days)"
+                    sudo virsh snapshot-delete "$vm_name" "$snapshot"
+                fi
+            fi
+        fi
+    done
+}
+
+log_message "Starting maintenance tasks"
+
+# Rotate logs
+rotate_logs "/var/log/vm-snapshots.log" 10
+rotate_logs "/var/log/vm-snapshot-verification.log" 5
+rotate_logs "/var/log/vm-snapshot-monitor.log" 5
+
+# Cleanup old snapshots
+cleanup_old_snapshots "test-vm" 30
+
+log_message "Maintenance tasks completed"
+EOF
+
+sudo chmod +x /opt/vm-snapshots/maintenance.sh
+Troubleshooting Common Issues
+Issue 1: Snapshot Creation Fails
+Problem: Snapshot creation fails with "operation not supported" error.
+
+Solution:
+
+# Check VM disk format
+sudo virsh domblklist test-vm
+
+# Ensure VM is using qcow2 format for internal snapshots
+sudo qemu-img info /path/to/vm/disk.qcow2
+
+# Convert raw disk to qcow2 if needed (VM must be shut down)
+sudo qemu-img convert -f raw -O qcow2 /path/to/disk.raw /path/to/disk.qcow2
+Issue 2: Snapshot Revert Fails
+Problem: Cannot revert to snapshot due to VM state conflicts.
+
+Solution:
+
+# Force shutdown VM if needed
+sudo virsh destroy test-vm
+
+# Check snapshot state
+sudo virsh snapshot-info test-vm snapshot-name
+
+# Try revert with force option
+sudo virsh snapshot-revert test-vm snapshot-name --force
+Issue 3: Disk Space Issues
+Problem: Snapshots consuming too much disk space.
+
+Solution:
+
+# Check snapshot sizes
+sudo virsh domblklist test-vm | while read target source; do
+    if [ "$target" != "Target" ] && [ -n "$source" ]; then
+        echo "$target: $(du -sh $source)"
+    fi
+done
+
+# Merge snapshots to reduce space (careful - this is destructive)
+sudo virsh blockcommit test-vm vda --active --verbose --pivot
+Conclusion
+In this comprehensive lab, you have successfully learned to manage VM snapshots using open-source tools. You accomplished the following key objectives:
+
+What You Learned:
+
+Snapshot Creation: Mastered creating VM snapshots using CLI tools with various options including internal, external, and custom configurations
+Recovery Operations: Implemented rollback and recovery procedures, including automated recovery scripts and verification processes
+Automation: Set up comprehensive automation using systemd timers, cron jobs, and custom scripts for scheduled snapshot creation
+Monitoring and Maintenance: Created monitoring systems to track snapshot health and automated maintenance procedures
+Why This Matters: VM snapshots are critical for:
+
+Data Protection: Providing point-in-time recovery capabilities for virtual machines
+Change Management: Enabling safe testing and rollback of system changes
+Disaster Recovery: Supporting business continuity through automated backup strategies
+Development Workflows: Facilitating development and testing environments with quick state restoration
+Real-World Applications:
+
+Production environments use automated snapshots for regular backup schedules
+Development teams rely on snapshots for testing new features safely
+System administrators use snapshots before major updates or configuration changes
+Cloud providers implement snapshot services for customer data protection
+The skills you've developed in this lab are directly applicable to Red Hat Certified Specialist in OpenShift Virtualization certification and are essential for managing enterprise virtualization environments. You now have the foundation to implement robust snapshot management strategies in production environments using open-source tools.
