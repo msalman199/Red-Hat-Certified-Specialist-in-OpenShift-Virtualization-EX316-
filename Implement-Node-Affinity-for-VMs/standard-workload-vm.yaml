@@ -1,0 +1,62 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: standard-workload-vm
+  namespace: default
+spec:
+  running: false
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: standard-workload-vm
+    spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 80
+            preference:
+              matchExpressions:
+              - key: workload-type
+                operator: In
+                values:
+                - standard
+          - weight: 60
+            preference:
+              matchExpressions:
+              - key: memory-size
+                operator: In
+                values:
+                - medium
+          - weight: 40
+            preference:
+              matchExpressions:
+              - key: cpu-type
+                operator: In
+                values:
+                - amd-epyc
+      domain:
+        cpu:
+          cores: 2
+        memory:
+          guest: 4Gi
+        devices:
+          disks:
+          - name: containerdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: default
+            masquerade: {}
+        networks:
+        - name: default
+          pod: {}
+      volumes:
+      - name: containerdisk
+        containerDisk:
+          image: quay.io/kubevirt/cirros-container-disk-demo
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userDataBase64: SGkuXG4=

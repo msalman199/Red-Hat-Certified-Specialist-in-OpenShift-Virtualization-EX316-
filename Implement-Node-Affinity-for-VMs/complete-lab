@@ -1,0 +1,682 @@
+Lab 15: Implement Node Affinity for VMs
+Objectives
+By the end of this lab, you will be able to:
+
+Understand the concept of node affinity in Kubernetes environments
+Configure node affinity rules for virtual machines using KubeVirt
+Test VM scheduling on specific nodes based on hardware requirements
+Implement affinity settings for high-performance workloads
+Troubleshoot common node affinity configuration issues
+Optimize VM placement for better resource utilization
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes concepts (pods, nodes, labels, selectors)
+Familiarity with YAML configuration files
+Knowledge of virtual machine concepts
+Experience with command-line interface (CLI) operations
+Understanding of resource management in containerized environments
+Required Knowledge Areas
+Kubernetes Fundamentals: Node management, scheduling, and resource allocation
+KubeVirt Basics: Virtual machine management in Kubernetes
+Linux Command Line: File editing, navigation, and system monitoring
+YAML Syntax: Configuration file structure and formatting
+Lab Environment Setup
+Good News! Al Nafi provides ready-to-use Linux-based cloud machines with all necessary tools pre-installed. Simply click Start Lab to begin - no need to build your own virtual machine or install software.
+
+Pre-installed Tools
+Your lab environment includes:
+
+Kubernetes cluster (3 nodes minimum)
+KubeVirt operator and components
+kubectl command-line tool
+Text editors (nano, vim)
+Monitoring tools
+Task 1: Configure Node Affinity Rules for VMs
+Node affinity allows you to constrain which nodes your VMs can be scheduled on based on labels and node characteristics. This is crucial for ensuring VMs run on appropriate hardware.
+
+Subtask 1.1: Examine Current Node Configuration
+First, let's explore the existing nodes and their labels to understand our scheduling options.
+
+Step 1: List all nodes in the cluster
+
+kubectl get nodes
+Step 2: View detailed node information with labels
+
+kubectl get nodes --show-labels
+Step 3: Examine node capacity and allocatable resources
+
+kubectl describe nodes
+Step 4: Check for existing node labels that we can use for affinity
+
+kubectl get nodes -o json | grep -A 10 -B 10 "labels"
+Subtask 1.2: Add Custom Labels to Nodes
+We'll add custom labels to categorize nodes based on their intended use.
+
+Step 1: Label nodes for different workload types
+
+# Label first node for high-performance workloads
+kubectl label nodes <node-1-name> workload-type=high-performance
+
+# Label second node for standard workloads
+kubectl label nodes <node-2-name> workload-type=standard
+
+# Label third node for development workloads
+kubectl label nodes <node-3-name> workload-type=development
+Step 2: Add hardware-specific labels
+
+# Add CPU type labels (replace with actual node names)
+kubectl label nodes <node-1-name> cpu-type=intel-xeon
+kubectl label nodes <node-2-name> cpu-type=amd-epyc
+kubectl label nodes <node-3-name> cpu-type=intel-core
+
+# Add memory capacity labels
+kubectl label nodes <node-1-name> memory-size=large
+kubectl label nodes <node-2-name> memory-size=medium
+kubectl label nodes <node-3-name> memory-size=small
+Step 3: Verify labels have been applied
+
+kubectl get nodes --show-labels | grep workload-type
+Subtask 1.3: Create VM with Required Node Affinity
+Now we'll create a virtual machine with node affinity rules that specify where it should be scheduled.
+
+Step 1: Create a VM configuration file with node affinity
+
+nano high-performance-vm.yaml
+Step 2: Add the following configuration
+
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: high-performance-vm
+  namespace: default
+spec:
+  running: false
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: high-performance-vm
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: workload-type
+                operator: In
+                values:
+                - high-performance
+              - key: cpu-type
+                operator: In
+                values:
+                - intel-xeon
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: memory-size
+                operator: In
+                values:
+                - large
+      domain:
+        cpu:
+          cores: 4
+        memory:
+          guest: 8Gi
+        devices:
+          disks:
+          - name: containerdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: default
+            masquerade: {}
+        networks:
+        - name: default
+          pod: {}
+      volumes:
+      - name: containerdisk
+        containerDisk:
+          image: quay.io/kubevirt/cirros-container-disk-demo
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userDataBase64: SGkuXG4=
+Step 3: Apply the VM configuration
+
+kubectl apply -f high-performance-vm.yaml
+Step 4: Verify the VM has been created
+
+kubectl get vm
+Subtask 1.4: Create VM with Preferred Node Affinity
+Let's create another VM that uses preferred affinity instead of required affinity.
+
+Step 1: Create a configuration file for a standard workload VM
+
+nano standard-workload-vm.yaml
+Step 2: Add the following configuration
+
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: standard-workload-vm
+  namespace: default
+spec:
+  running: false
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: standard-workload-vm
+    spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 80
+            preference:
+              matchExpressions:
+              - key: workload-type
+                operator: In
+                values:
+                - standard
+          - weight: 60
+            preference:
+              matchExpressions:
+              - key: memory-size
+                operator: In
+                values:
+                - medium
+          - weight: 40
+            preference:
+              matchExpressions:
+              - key: cpu-type
+                operator: In
+                values:
+                - amd-epyc
+      domain:
+        cpu:
+          cores: 2
+        memory:
+          guest: 4Gi
+        devices:
+          disks:
+          - name: containerdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: default
+            masquerade: {}
+        networks:
+        - name: default
+          pod: {}
+      volumes:
+      - name: containerdisk
+        containerDisk:
+          image: quay.io/kubevirt/cirros-container-disk-demo
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userDataBase64: SGkuXG4=
+Step 3: Apply the standard workload VM
+
+kubectl apply -f standard-workload-vm.yaml
+Task 2: Test VM Scheduling on Specific Nodes
+Now we'll test our node affinity configurations by starting the VMs and verifying they are scheduled on the correct nodes.
+
+Subtask 2.1: Start VMs and Monitor Scheduling
+Step 1: Start the high-performance VM
+
+kubectl patch vm high-performance-vm --type merge -p '{"spec":{"running":true}}'
+Step 2: Start the standard workload VM
+
+kubectl patch vm standard-workload-vm --type merge -p '{"spec":{"running":true}}'
+Step 3: Monitor VM instance creation
+
+kubectl get vmi -w
+Step 4: Check which nodes the VMs are scheduled on
+
+kubectl get vmi -o wide
+Step 5: Verify the scheduling decisions
+
+# Get detailed information about VM placement
+kubectl describe vmi high-performance-vm | grep Node:
+kubectl describe vmi standard-workload-vm | grep Node:
+Subtask 2.2: Analyze Scheduling Events
+Step 1: Check scheduling events for the high-performance VM
+
+kubectl describe vmi high-performance-vm | grep -A 10 -B 10 Events:
+Step 2: Check scheduling events for the standard workload VM
+
+kubectl describe vmi standard-workload-vm | grep -A 10 -B 10 Events:
+Step 3: Verify that affinity rules were respected
+
+# Check if high-performance VM is on the correct node
+kubectl get vmi high-performance-vm -o jsonpath='{.status.nodeName}'
+kubectl get node $(kubectl get vmi high-performance-vm -o jsonpath='{.status.nodeName}') --show-labels | grep workload-type
+Subtask 2.3: Test Affinity Rule Violations
+Let's test what happens when we create a VM with affinity rules that cannot be satisfied.
+
+Step 1: Create a VM with impossible affinity requirements
+
+nano impossible-affinity-vm.yaml
+Step 2: Add configuration with non-existent node labels
+
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: impossible-affinity-vm
+  namespace: default
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: impossible-affinity-vm
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: workload-type
+                operator: In
+                values:
+                - non-existent-type
+              - key: special-hardware
+                operator: In
+                values:
+                - gpu-v100
+      domain:
+        cpu:
+          cores: 1
+        memory:
+          guest: 2Gi
+        devices:
+          disks:
+          - name: containerdisk
+            disk:
+              bus: virtio
+        networks:
+        - name: default
+          pod: {}
+      volumes:
+      - name: containerdisk
+        containerDisk:
+          image: quay.io/kubevirt/cirros-container-disk-demo
+Step 3: Apply the impossible affinity VM
+
+kubectl apply -f impossible-affinity-vm.yaml
+Step 4: Observe the scheduling failure
+
+kubectl get vmi impossible-affinity-vm
+kubectl describe vmi impossible-affinity-vm
+Step 5: Check the events to understand why scheduling failed
+
+kubectl get events --field-selector involvedObject.name=impossible-affinity-vm
+Task 3: Adjust Affinity Settings for High-Performance Workloads
+In this task, we'll optimize affinity settings for high-performance workloads and implement anti-affinity rules.
+
+Subtask 3.1: Implement Anti-Affinity Rules
+Anti-affinity ensures that certain VMs don't run on the same node, which is useful for high availability.
+
+Step 1: Create a VM with pod anti-affinity
+
+nano ha-vm-1.yaml
+Step 2: Add configuration with anti-affinity rules
+
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: ha-vm-1
+  namespace: default
+  labels:
+    app: critical-service
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: ha-vm-1
+        app: critical-service
+    spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: workload-type
+                operator: In
+                values:
+                - high-performance
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - critical-service
+            topologyKey: kubernetes.io/hostname
+      domain:
+        cpu:
+          cores: 2
+        memory:
+          guest: 4Gi
+        devices:
+          disks:
+          - name: containerdisk
+            disk:
+              bus: virtio
+        networks:
+        - name: default
+          pod: {}
+      volumes:
+      - name: containerdisk
+        containerDisk:
+          image: quay.io/kubevirt/cirros-container-disk-demo
+Step 3: Create a second VM with the same anti-affinity rules
+
+cp ha-vm-1.yaml ha-vm-2.yaml
+sed -i 's/ha-vm-1/ha-vm-2/g' ha-vm-2.yaml
+Step 4: Apply both VMs
+
+kubectl apply -f ha-vm-1.yaml
+kubectl apply -f ha-vm-2.yaml
+Step 5: Verify they are scheduled on different nodes
+
+kubectl get vmi -l app=critical-service -o wide
+Subtask 3.2: Configure Resource-Based Affinity
+Let's create affinity rules based on available resources.
+
+Step 1: Create a memory-intensive VM configuration
+
+nano memory-intensive-vm.yaml
+Step 2: Add configuration that requires nodes with sufficient memory
+
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: memory-intensive-vm
+  namespace: default
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: memory-intensive-vm
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: memory-size
+                operator: In
+                values:
+                - large
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: workload-type
+                operator: In
+                values:
+                - high-performance
+      domain:
+        cpu:
+          cores: 4
+        memory:
+          guest: 12Gi
+        devices:
+          disks:
+          - name: containerdisk
+            disk:
+              bus: virtio
+        networks:
+        - name: default
+          pod: {}
+      volumes:
+      - name: containerdisk
+        containerDisk:
+          image: quay.io/kubevirt/cirros-container-disk-demo
+Step 3: Apply the memory-intensive VM
+
+kubectl apply -f memory-intensive-vm.yaml
+Step 4: Monitor resource usage on nodes
+
+kubectl top nodes
+Subtask 3.3: Implement Dynamic Affinity Updates
+Step 1: Create a script to monitor and update node labels based on resource usage
+
+nano update-node-labels.sh
+Step 2: Add the following script content
+
+#!/bin/bash
+
+# Script to update node labels based on resource usage
+echo "Monitoring node resources and updating labels..."
+
+for node in $(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'); do
+    echo "Processing node: $node"
+    
+    # Get memory usage percentage
+    memory_usage=$(kubectl top node $node --no-headers | awk '{print $4}' | sed 's/%//')
+    
+    # Update labels based on memory usage
+    if [ "$memory_usage" -lt 50 ]; then
+        kubectl label nodes $node memory-pressure=low --overwrite
+        echo "  Set memory-pressure=low for $node (usage: ${memory_usage}%)"
+    elif [ "$memory_usage" -lt 80 ]; then
+        kubectl label nodes $node memory-pressure=medium --overwrite
+        echo "  Set memory-pressure=medium for $node (usage: ${memory_usage}%)"
+    else
+        kubectl label nodes $node memory-pressure=high --overwrite
+        echo "  Set memory-pressure=high for $node (usage: ${memory_usage}%)"
+    fi
+done
+
+echo "Node label updates completed."
+Step 3: Make the script executable and run it
+
+chmod +x update-node-labels.sh
+./update-node-labels.sh
+Step 4: Create a VM that uses the dynamic labels
+
+nano adaptive-vm.yaml
+Step 5: Add configuration that avoids high-pressure nodes
+
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: adaptive-vm
+  namespace: default
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: adaptive-vm
+    spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: memory-pressure
+                operator: In
+                values:
+                - low
+          - weight: 50
+            preference:
+              matchExpressions:
+              - key: memory-pressure
+                operator: In
+                values:
+                - medium
+      domain:
+        cpu:
+          cores: 2
+        memory:
+          guest: 4Gi
+        devices:
+          disks:
+          - name: containerdisk
+            disk:
+              bus: virtio
+        networks:
+        - name: default
+          pod: {}
+      volumes:
+      - name: containerdisk
+        containerDisk:
+          image: quay.io/kubevirt/cirros-container-disk-demo
+Step 6: Apply the adaptive VM
+
+kubectl apply -f adaptive-vm.yaml
+Verification and Testing
+Comprehensive Status Check
+Step 1: List all VMs and their current status
+
+kubectl get vm,vmi -o wide
+Step 2: Check node resource utilization
+
+kubectl top nodes
+Step 3: Verify affinity rules are working correctly
+
+# Create a summary script
+nano affinity-summary.sh
+Step 4: Add summary script content
+
+#!/bin/bash
+
+echo "=== Node Affinity Lab Summary ==="
+echo ""
+
+echo "Nodes and their labels:"
+kubectl get nodes --show-labels | grep -E "(NAME|workload-type|memory-size|cpu-type)"
+echo ""
+
+echo "Running VMs and their node placement:"
+for vm in $(kubectl get vmi -o jsonpath='{.items[*].metadata.name}'); do
+    node=$(kubectl get vmi $vm -o jsonpath='{.status.nodeName}')
+    echo "VM: $vm -> Node: $node"
+done
+echo ""
+
+echo "Node resource usage:"
+kubectl top nodes
+echo ""
+
+echo "Recent scheduling events:"
+kubectl get events --sort-by='.lastTimestamp' | grep -i schedule | tail -5
+Step 5: Run the summary script
+
+chmod +x affinity-summary.sh
+./affinity-summary.sh
+Troubleshooting Common Issues
+Issue 1: VM Stuck in Pending State
+Problem: VM remains in pending state and doesn't start.
+
+Solution Steps:
+
+# Check VM status
+kubectl describe vmi <vm-name>
+
+# Look for scheduling events
+kubectl get events --field-selector involvedObject.name=<vm-name>
+
+# Verify node labels match affinity requirements
+kubectl get nodes --show-labels | grep <required-label>
+Issue 2: VM Scheduled on Wrong Node
+Problem: VM is not respecting affinity rules.
+
+Solution Steps:
+
+# Verify the VM configuration
+kubectl get vm <vm-name> -o yaml | grep -A 20 affinity
+
+# Check if labels exist on nodes
+kubectl get nodes --show-labels
+
+# Restart the VM to trigger rescheduling
+kubectl patch vm <vm-name> --type merge -p '{"spec":{"running":false}}'
+kubectl patch vm <vm-name> --type merge -p '{"spec":{"running":true}}'
+Issue 3: Anti-Affinity Not Working
+Problem: VMs with anti-affinity rules are scheduled on the same node.
+
+Solution Steps:
+
+# Verify pod labels match anti-affinity selectors
+kubectl get vmi --show-labels
+
+# Check if there are enough nodes to satisfy anti-affinity
+kubectl get nodes
+
+# Review anti-affinity configuration
+kubectl get vm <vm-name> -o yaml | grep -A 15 podAntiAffinity
+Cleanup
+Step 1: Stop all VMs
+
+kubectl patch vm high-performance-vm --type merge -p '{"spec":{"running":false}}'
+kubectl patch vm standard-workload-vm --type merge -p '{"spec":{"running":false}}'
+kubectl patch vm impossible-affinity-vm --type merge -p '{"spec":{"running":false}}'
+kubectl patch vm ha-vm-1 --type merge -p '{"spec":{"running":false}}'
+kubectl patch vm ha-vm-2 --type merge -p '{"spec":{"running":false}}'
+kubectl patch vm memory-intensive-vm --type merge -p '{"spec":{"running":false}}'
+kubectl patch vm adaptive-vm --type merge -p '{"spec":{"running":false}}'
+Step 2: Delete all VMs
+
+kubectl delete vm --all
+Step 3: Remove custom labels from nodes (optional)
+
+kubectl label nodes --all workload-type-
+kubectl label nodes --all cpu-type-
+kubectl label nodes --all memory-size-
+kubectl label nodes --all memory-pressure-
+Step 4: Clean up configuration files
+
+rm -f *.yaml *.sh
+Conclusion
+Congratulations! You have successfully completed Lab 15: Implement Node Affinity for VMs. In this comprehensive lab, you have accomplished the following:
+
+Key Achievements
+Node Affinity Mastery: You learned how to configure both required and preferred node affinity rules, giving you precise control over VM placement in your Kubernetes cluster.
+
+Practical Implementation: You created multiple virtual machines with different affinity requirements, from high-performance workloads to standard applications, demonstrating real-world scheduling scenarios.
+
+Advanced Scheduling Techniques: You implemented anti-affinity rules for high availability, ensuring critical services are distributed across different nodes for fault tolerance.
+
+Dynamic Resource Management: You created scripts to monitor node resources and update labels dynamically, enabling adaptive VM scheduling based on current cluster conditions.
+
+Troubleshooting Skills: You gained experience identifying and resolving common node affinity issues, including pending VMs and incorrect scheduling decisions.
+
+Why This Matters
+Node affinity is crucial in production environments because it:
+
+Optimizes Performance: Ensures VMs run on nodes with appropriate hardware characteristics
+Improves Reliability: Distributes critical workloads across multiple nodes for high availability
+Enhances Resource Utilization: Balances workloads based on node capacity and current usage
+Supports Compliance: Helps meet regulatory requirements for data locality and security zones
+Reduces Costs: Optimizes resource allocation to minimize infrastructure expenses
+Real-World Applications
+The skills you've developed in this lab directly apply to:
+
+Enterprise Virtualization: Managing large-scale VM deployments in corporate environments
+Cloud Migration: Optimizing workload placement during infrastructure transitions
+High-Performance Computing: Ensuring compute-intensive applications run on appropriate hardware
+Disaster Recovery: Implementing geographic distribution of critical services
+Multi-Tenant Environments: Isolating workloads based on security and performance requirements
+Next Steps
+To further enhance your expertise:
+
+Explore taints and tolerations for more advanced node scheduling
+Learn about resource quotas and limit ranges for resource management
+Study cluster autoscaling for dynamic node provisioning
+Investigate custom schedulers for specialized workload requirements
+Practice with multi-zone deployments for geographic distribution
+You now have the knowledge and practical experience to implement sophisticated VM scheduling strategies in production Kubernetes environments, making you well-prepared for the Red Hat Certified Specialist in OpenShift Virtualization certification and real-world virtualization challenges.

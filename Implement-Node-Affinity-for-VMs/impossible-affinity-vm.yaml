@@ -1,0 +1,42 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: impossible-affinity-vm
+  namespace: default
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: impossible-affinity-vm
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: workload-type
+                operator: In
+                values:
+                - non-existent-type
+              - key: special-hardware
+                operator: In
+                values:
+                - gpu-v100
+      domain:
+        cpu:
+          cores: 1
+        memory:
+          guest: 2Gi
+        devices:
+          disks:
+          - name: containerdisk
+            disk:
+              bus: virtio
+        networks:
+        - name: default
+          pod: {}
+      volumes:
+      - name: containerdisk
+        containerDisk:
+          image: quay.io/kubevirt/cirros-container-disk-demo
