@@ -1,0 +1,17 @@
+# Create file: kubevirt-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubevirt-config
+  namespace: kubevirt
+data:
+  feature-gates: "LiveMigration"
+  migrations: |-
+    parallelOutboundMigrationsPerNode: 2
+    parallelMigrationsPerCluster: 5
+    allowAutoConverge: false
+    bandwidthPerMigration: 64Mi
+    completionTimeoutPerGiB: 800
+    progressTimeout: 150
+    unsafeMigrationOverride: false
+    allowPostCopy: false

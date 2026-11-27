@@ -1,0 +1,18 @@
+# Create file: migration-policy.yaml
+apiVersion: migrations.kubevirt.io/v1alpha1
+kind: MigrationPolicy
+metadata:
+  name: ha-migration-policy
+spec:
+  selectors:
+    namespaceSelector:
+      matchLabels:
+        ha-enabled: "true"
+    virtualMachineInstanceSelector:
+      matchLabels:
+        ha-priority: "high"
+  allowAutoConverge: true
+  allowPostCopy: false
+  completionTimeoutPerGiB: 800
+  parallelOutboundMigrationsPerNode: 2
+  parallelMigrationsPerCluster: 5
