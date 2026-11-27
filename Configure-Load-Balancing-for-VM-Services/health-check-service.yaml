@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: webserver-health
+  namespace: default
+  labels:
+    app: webserver
+  annotations:
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  type: ClusterIP
+  selector:
+    app: webserver
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+    protocol: TCP
+  publishNotReadyAddresses: false
