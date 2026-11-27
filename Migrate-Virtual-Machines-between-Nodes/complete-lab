@@ -1,0 +1,429 @@
+Lab 11: Migrate Virtual Machines between Nodes
+Objectives
+By the end of this lab, students will be able to:
+
+Understand the concepts and benefits of VM live migration in OpenShift Virtualization
+Use virtctl command-line tool to perform live migration of virtual machines
+Monitor and track VM migration status using various OpenShift tools
+Verify VM performance and functionality after migration
+Implement migration strategies for load balancing and maintenance scenarios
+Troubleshoot common migration issues and understand migration constraints
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of OpenShift cluster architecture and node management
+Familiarity with OpenShift Virtualization concepts and VM lifecycle
+Experience with kubectl and virtctl command-line tools
+Knowledge of YAML configuration files and Kubernetes resources
+Understanding of storage concepts in OpenShift (PVCs, storage classes)
+Completed previous labs on VM creation and management in OpenShift Virtualization
+Lab Environment Setup
+Ready-to-Use Cloud Machines: Al Nafi provides pre-configured Linux-based cloud machines with OpenShift Virtualization already installed and configured. Simply click Start Lab to access your environment - no need to build your own VM or install software.
+
+Your lab environment includes:
+
+Multi-node OpenShift cluster with OpenShift Virtualization operator
+Pre-configured storage classes and networking
+Sample virtual machines ready for migration
+All necessary CLI tools (oc, kubectl, virtctl) pre-installed
+Task 1: Use virtctl for Live Migration
+Subtask 1.1: Verify Cluster Readiness for Migration
+First, let's ensure our OpenShift cluster is properly configured for VM migration.
+
+Check cluster nodes and their status:
+oc get nodes -o wide
+Verify OpenShift Virtualization operator is running:
+oc get pods -n openshift-cnv
+Check available virtual machines:
+oc get vms -A
+Verify VM instances are running:
+oc get vmis -A
+Subtask 1.2: Examine Current VM Placement
+Before performing migration, let's understand where our VMs are currently running.
+
+Get detailed information about running VMs:
+virtctl get vms -o wide
+Check which node a specific VM is running on:
+oc get vmi <vm-name> -o jsonpath='{.status.nodeName}'
+List all nodes with their resource usage:
+oc describe nodes | grep -E "Name:|Allocated resources:"
+Subtask 1.3: Create a Test VM for Migration
+If you don't have a suitable VM for migration, let's create one.
+
+Create a simple test VM:
+cat << EOF | oc apply -f -
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: migration-test-vm
+  namespace: default
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: migration-test-vm
+    spec:
+      domain:
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: containerdisk
+          - disk:
+              bus: virtio
+            name: cloudinitdisk
+          interfaces:
+          - masquerade: {}
+            name: default
+        resources:
+          requests:
+            memory: 1Gi
+            cpu: 1
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+      - containerDisk:
+          image: quay.io/kubevirt/cirros-container-disk-demo
+        name: containerdisk
+      - cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            password: fedora
+            chpasswd: { expire: False }
+        name: cloudinitdisk
+EOF
+Wait for the VM to be ready:
+oc wait --for=condition=Ready vmi/migration-test-vm --timeout=300s
+Verify the VM is running and note its current node:
+oc get vmi migration-test-vm -o jsonpath='{.status.nodeName}'
+echo ""
+Subtask 1.4: Perform Live Migration Using virtctl
+Now let's perform the actual live migration of our virtual machine.
+
+Initiate live migration using virtctl:
+virtctl migrate migration-test-vm
+Alternative method using oc command:
+cat << EOF | oc apply -f -
+apiVersion: kubevirt.io/v1
+kind: VirtualMachineInstanceMigration
+metadata:
+  name: migration-test-vm-migration
+  namespace: default
+spec:
+  vmiName: migration-test-vm
+EOF
+Verify migration object was created:
+oc get vmim -w
+Subtask 1.5: Migrate to a Specific Node
+Sometimes you need to migrate a VM to a specific node for maintenance or load balancing.
+
+List available nodes:
+oc get nodes --show-labels
+Create a migration with node selector:
+cat << EOF | oc apply -f -
+apiVersion: kubevirt.io/v1
+kind: VirtualMachineInstanceMigration
+metadata:
+  name: targeted-migration
+  namespace: default
+spec:
+  vmiName: migration-test-vm
+  nodeSelector:
+    kubernetes.io/hostname: <target-node-name>
+EOF
+Replace <target-node-name> with the actual name of your target node.
+
+Task 2: Monitor VM Migration Status
+Subtask 2.1: Real-time Migration Monitoring
+Let's monitor the migration process in real-time to understand what's happening.
+
+Watch migration status continuously:
+watch -n 2 'oc get vmim'
+Monitor VM instance status during migration:
+watch -n 2 'oc get vmi migration-test-vm -o wide'
+Check detailed migration events:
+oc describe vmim migration-test-vm-migration
+Subtask 2.2: Understanding Migration Phases
+Migration goes through several phases. Let's examine each one.
+
+Check current migration phase:
+oc get vmim migration-test-vm-migration -o jsonpath='{.status.phase}'
+echo ""
+Monitor migration conditions:
+oc get vmim migration-test-vm-migration -o jsonpath='{.status.conditions[*].type}'
+echo ""
+Get detailed migration status:
+oc get vmim migration-test-vm-migration -o yaml | grep -A 20 status:
+Subtask 2.3: Create a Migration Monitoring Script
+Let's create a script to monitor migration progress more effectively.
+
+Create a migration monitoring script:
+cat << 'EOF' > monitor-migration.sh
+#!/bin/bash
+
+VM_NAME=${1:-migration-test-vm}
+NAMESPACE=${2:-default}
+
+echo "Monitoring migration for VM: $VM_NAME in namespace: $NAMESPACE"
+echo "=================================================="
+
+while true; do
+    clear
+    echo "Current time: $(date)"
+    echo ""
+    
+    echo "VM Instance Status:"
+    oc get vmi $VM_NAME -n $NAMESPACE -o wide 2>/dev/null || echo "VM not found"
+    echo ""
+    
+    echo "Migration Status:"
+    oc get vmim -n $NAMESPACE 2>/dev/null || echo "No migrations found"
+    echo ""
+    
+    echo "Recent Events:"
+    oc get events -n $NAMESPACE --sort-by='.lastTimestamp' | tail -5
+    echo ""
+    
+    sleep 5
+done
+EOF
+
+chmod +x monitor-migration.sh
+Run the monitoring script:
+./monitor-migration.sh migration-test-vm default
+Press Ctrl+C to stop monitoring when the migration completes.
+
+Subtask 2.4: Check Migration Logs
+Understanding migration logs helps troubleshoot issues and optimize performance.
+
+Get migration-related pod logs:
+oc logs -l kubevirt.io/created-by -n default --tail=50
+Check virt-launcher logs for the migrating VM:
+oc logs -l kubevirt.io/vm=migration-test-vm -n default --tail=100
+Monitor cluster events related to migration:
+oc get events --field-selector reason=SuccessfulMigration -A
+Task 3: Verify Post-Migration VM Performance
+Subtask 3.1: Verify VM Functionality After Migration
+After migration completes, we need to ensure the VM is functioning correctly.
+
+Confirm VM is running on the new node:
+oc get vmi migration-test-vm -o jsonpath='{.status.nodeName}'
+echo ""
+Check VM status and conditions:
+oc get vmi migration-test-vm -o yaml | grep -A 10 conditions:
+Verify VM network connectivity:
+virtctl console migration-test-vm
+In the VM console, test network connectivity:
+
+ping -c 3 8.8.8.8
+Type Ctrl+] to exit the console.
+
+Subtask 3.2: Performance Comparison Testing
+Let's create a simple performance test to compare pre and post-migration performance.
+
+Create a performance test script:
+cat << 'EOF' > vm-performance-test.sh
+#!/bin/bash
+
+VM_NAME=${1:-migration-test-vm}
+NAMESPACE=${2:-default}
+
+echo "Performance Test for VM: $VM_NAME"
+echo "=================================="
+
+echo "Testing VM responsiveness..."
+start_time=$(date +%s%N)
+virtctl ssh fedora@$VM_NAME -n $NAMESPACE --command="echo 'VM Response Test'" 2>/dev/null
+end_time=$(date +%s%N)
+response_time=$(( (end_time - start_time) / 1000000 ))
+echo "VM response time: ${response_time}ms"
+
+echo ""
+echo "Checking VM resource usage..."
+oc top pod -l kubevirt.io/vm=$VM_NAME -n $NAMESPACE
+
+echo ""
+echo "Verifying VM network performance..."
+virtctl ssh fedora@$VM_NAME -n $NAMESPACE --command="curl -s -w 'Total time: %{time_total}s\n' -o /dev/null http://httpbin.org/get" 2>/dev/null || echo "Network test skipped (VM may not have curl installed)"
+EOF
+
+chmod +x vm-performance-test.sh
+Run performance test:
+./vm-performance-test.sh migration-test-vm default
+Subtask 3.3: Verify Storage and Data Integrity
+Ensure that VM storage and data remain intact after migration.
+
+Check PVC status:
+oc get pvc -l kubevirt.io/vm=migration-test-vm
+Verify VM disk usage:
+virtctl ssh fedora@migration-test-vm --command="df -h" 2>/dev/null || echo "SSH not available, checking from host"
+Test file system integrity (if SSH is available):
+virtctl ssh fedora@migration-test-vm --command="touch /tmp/post-migration-test && ls -la /tmp/post-migration-test" 2>/dev/null
+Subtask 3.4: Monitor Resource Usage on New Node
+Check how the migration affected resource usage on both source and destination nodes.
+
+Check resource usage on the new node:
+NEW_NODE=$(oc get vmi migration-test-vm -o jsonpath='{.status.nodeName}')
+echo "VM is now running on node: $NEW_NODE"
+oc describe node $NEW_NODE | grep -A 5 "Allocated resources:"
+Compare with other nodes:
+oc top nodes
+Check VM resource consumption:
+oc top pod -l kubevirt.io/vm=migration-test-vm
+Advanced Migration Scenarios
+Scenario 1: Batch Migration for Maintenance
+When performing node maintenance, you might need to migrate multiple VMs.
+
+Create a batch migration script:
+cat << 'EOF' > batch-migrate.sh
+#!/bin/bash
+
+SOURCE_NODE=${1}
+TARGET_NODE=${2}
+
+if [ -z "$SOURCE_NODE" ] || [ -z "$TARGET_NODE" ]; then
+    echo "Usage: $0 <source-node> <target-node>"
+    exit 1
+fi
+
+echo "Migrating all VMs from $SOURCE_NODE to $TARGET_NODE"
+
+# Get all VMIs running on the source node
+VMIS=$(oc get vmi -A -o jsonpath='{range .items[?(@.status.nodeName=="'$SOURCE_NODE'")]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}')
+
+if [ -z "$VMIS" ]; then
+    echo "No VMs found on node $SOURCE_NODE"
+    exit 0
+fi
+
+echo "Found VMs to migrate:"
+echo "$VMIS"
+echo ""
+
+# Migrate each VM
+echo "$VMIS" | while read namespace vm_name; do
+    if [ -n "$vm_name" ]; then
+        echo "Migrating $vm_name in namespace $namespace..."
+        cat << MIGRATION_EOF | oc apply -f -
+apiVersion: kubevirt.io/v1
+kind: VirtualMachineInstanceMigration
+metadata:
+  name: ${vm_name}-maintenance-migration
+  namespace: $namespace
+spec:
+  vmiName: $vm_name
+  nodeSelector:
+    kubernetes.io/hostname: $TARGET_NODE
+MIGRATION_EOF
+        echo "Migration initiated for $vm_name"
+        sleep 2
+    fi
+done
+
+echo ""
+echo "All migrations initiated. Monitor with: oc get vmim -A"
+EOF
+
+chmod +x batch-migrate.sh
+Use the batch migration script:
+# List nodes first
+oc get nodes
+
+# Run batch migration (replace with actual node names)
+# ./batch-migrate.sh <source-node> <target-node>
+Scenario 2: Migration with Constraints
+Sometimes you need to migrate VMs with specific constraints or policies.
+
+Create a VM with anti-affinity rules:
+cat << EOF | oc apply -f -
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: constrained-vm
+  namespace: default
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: constrained-vm
+        app: database
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - database
+            topologyKey: kubernetes.io/hostname
+      domain:
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: containerdisk
+        resources:
+          requests:
+            memory: 512Mi
+            cpu: 500m
+      volumes:
+      - containerDisk:
+          image: quay.io/kubevirt/cirros-container-disk-demo
+        name: containerdisk
+EOF
+Attempt migration and observe constraint behavior:
+virtctl migrate constrained-vm
+oc get vmim -w
+Troubleshooting Common Migration Issues
+Issue 1: Migration Stuck or Failed
+Check migration status and conditions:
+oc describe vmim <migration-name>
+Look for common failure reasons:
+oc get events --field-selector reason=FailedMigration -A
+Check node resources:
+oc describe nodes | grep -E "Name:|Conditions:|Allocated resources:"
+Issue 2: VM Not Responding After Migration
+Check VM status:
+oc get vmi <vm-name> -o yaml | grep -A 20 status:
+Restart VM if necessary:
+virtctl restart <vm-name>
+Check pod logs:
+oc logs -l kubevirt.io/vm=<vm-name> --tail=100
+Issue 3: Storage-Related Migration Problems
+Verify storage class supports migration:
+oc get storageclass -o yaml | grep -A 5 -B 5 volumeBindingMode
+Check PVC access modes:
+oc get pvc -o custom-columns=NAME:.metadata.name,ACCESS:.spec.accessModes
+Cleanup
+After completing the lab, clean up the resources:
+
+Delete test VMs:
+oc delete vm migration-test-vm constrained-vm
+Clean up migration objects:
+oc delete vmim --all
+Remove scripts:
+rm -f monitor-migration.sh vm-performance-test.sh batch-migrate.sh
+Conclusion
+In this comprehensive lab, you have successfully learned how to migrate virtual machines between nodes in an OpenShift Virtualization environment. You accomplished several key objectives:
+
+What You Learned:
+
+How to use virtctl and native Kubernetes resources to perform live VM migration
+Techniques for monitoring migration progress and understanding migration phases
+Methods to verify VM functionality and performance after migration
+Advanced scenarios including batch migrations and constraint-based migrations
+Troubleshooting common migration issues and their solutions
+Why This Matters: VM migration is a critical capability for maintaining high availability and efficient resource utilization in virtualized environments. The skills you've developed enable you to:
+
+Perform planned maintenance without service interruption
+Balance workloads across cluster nodes for optimal performance
+Respond to hardware issues by moving VMs to healthy nodes
+Implement disaster recovery and business continuity strategies
+Real-World Applications: These migration techniques are essential for production environments where uptime is critical. Whether you're managing a private cloud, hybrid infrastructure, or container-native virtualization platform, the ability to seamlessly move workloads between nodes is fundamental to modern IT operations.
+
+The hands-on experience with OpenShift Virtualization migration prepares you for the Red Hat Certified Specialist in OpenShift Virtualization certification and real-world scenarios where you'll need to maintain service availability while managing infrastructure changes.
