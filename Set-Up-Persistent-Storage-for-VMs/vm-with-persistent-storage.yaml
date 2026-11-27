@@ -1,0 +1,60 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: centos-vm-persistent
+  namespace: vm-storage-lab
+  labels:
+    app: centos-vm
+spec:
+  running: false
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: centos-vm-persistent
+    spec:
+      domain:
+        cpu:
+          cores: 2
+        memory:
+          guest: 4Gi
+        devices:
+          disks:
+            - name: rootdisk
+              disk:
+                bus: virtio
+            - name: datadisk
+              disk:
+                bus: virtio
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+          interfaces:
+            - name: default
+              masquerade: {}
+        resources:
+          requests:
+            memory: 4Gi
+            cpu: 2
+      networks:
+        - name: default
+          pod: {}
+      volumes:
+        - name: rootdisk
+          persistentVolumeClaim:
+            claimName: vm-root-disk
+        - name: datadisk
+          persistentVolumeClaim:
+            claimName: vm-data-disk
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            userData: |
+              #cloud-config
+              user: centos
+              password: redhat123
+              chpasswd: { expire: False }
+              ssh_authorized_keys:
+                - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC... # Add your SSH key here
+              runcmd:
+                - echo "VM with persistent storage initialized" > /var/log/vm-init.log
+                - mkdir -p /data
+                - echo "Data directory created" >> /var/log/vm-init.log

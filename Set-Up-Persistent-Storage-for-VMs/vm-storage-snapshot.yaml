@@ -1,0 +1,9 @@
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: vm-data-snapshot
+  namespace: vm-storage-lab
+spec:
+  volumeSnapshotClassName: ocs-storagecluster-rbdplugin-snapclass
+  source:
+    persistentVolumeClaimName: vm-data-disk

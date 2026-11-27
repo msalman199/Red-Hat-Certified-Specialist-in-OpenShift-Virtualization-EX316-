@@ -1,0 +1,57 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: advanced-storage-vm
+  namespace: vm-storage-lab
+spec:
+  running: false
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: advanced-storage-vm
+    spec:
+      domain:
+        cpu:
+          cores: 2
+        memory:
+          guest: 4Gi
+        devices:
+          disks:
+            - name: rootdisk
+              disk:
+                bus: virtio
+            - name: datadisk
+              disk:
+                bus: virtio
+            - name: shareddisk
+              disk:
+                bus: virtio
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+          interfaces:
+            - name: default
+              masquerade: {}
+      networks:
+        - name: default
+          pod: {}
+      volumes:
+        - name: rootdisk
+          persistentVolumeClaim:
+            claimName: vm-root-disk
+        - name: datadisk
+          persistentVolumeClaim:
+            claimName: vm-data-disk
+        - name: shareddisk
+          persistentVolumeClaim:
+            claimName: vm-shared-storage
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            userData: |
+              #cloud-config
+              user: centos
+              password: redhat123
+              chpasswd: { expire: False }
+              runcmd:
+                - mkdir -p /shared
+                - echo "Advanced storage VM initialized" > /var/log/advanced-vm-init.log
