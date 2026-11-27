@@ -1,0 +1,46 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachineInstance
+metadata:
+  name: secure-vmi
+  namespace: vmi-lab
+  labels:
+    app: secure-vm
+    security-level: high
+spec:
+  domain:
+    cpu:
+      cores: 1
+    memory:
+      guest: 1Gi
+    devices:
+      disks:
+      - name: containerdisk
+        disk:
+          bus: virtio
+      - name: cloudinitdisk
+        disk:
+          bus: virtio
+      interfaces:
+      - name: default
+        masquerade: {}
+    machine:
+      type: q35
+  networks:
+  - name: default
+    pod: {}
+  volumes:
+  - name: containerdisk
+    containerDisk:
+      image: quay.io/kubevirt/fedora-cloud-container-disk-demo
+  - name: cloudinitdisk
+    cloudInitNoCloud:
+      userData: |
+        #cloud-config
+        user: fedora
+        password: secure123
+        chpasswd: { expire: False }
+        ssh_pwauth: True
+        runcmd:
+        - systemctl enable sshd
+        - systemctl start sshd
+        - echo "Secure VMI configured" > /tmp/security.log

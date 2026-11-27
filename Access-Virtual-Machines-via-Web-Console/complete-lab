@@ -1,0 +1,389 @@
+Lab 4: Access Virtual Machines via Web Console
+Objectives
+By the end of this lab, students will be able to:
+
+Launch virtual machines using the OpenShift web console interface
+Access VM consoles through VNC (Virtual Network Computing) connections
+Manage virtual machine lifecycle using OpenShift CLI tools
+Navigate between web-based and command-line VM management approaches
+Troubleshoot common VM console access issues
+Understand the relationship between OpenShift Virtualization and traditional VM management
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Linux command-line operations
+Familiarity with OpenShift concepts and navigation
+Knowledge of virtual machine fundamentals
+Access to an OpenShift cluster with OpenShift Virtualization operator installed
+Basic understanding of YAML configuration files
+Familiarity with kubectl/oc command-line tools
+Ready-to-Use Cloud Machines
+Al Nafi provides pre-configured Linux-based cloud machines with OpenShift Virtualization already set up. Simply click Start Lab to begin - no need to build your own virtual machine environment. The lab environment includes:
+
+OpenShift cluster with Virtualization operator
+Pre-configured storage classes
+Sample VM templates
+Required CLI tools (oc, virtctl)
+Web console access credentials
+Lab Environment Setup
+Initial Access Verification
+Before proceeding with the main tasks, verify your lab environment:
+
+Access the OpenShift Web Console
+
+Open your browser and navigate to the provided OpenShift console URL
+Log in using the provided credentials
+Verify you can see the Virtualization section in the left navigation menu
+Verify CLI Access
+
+# Check OpenShift CLI access
+oc whoami
+
+# Verify virtctl is available
+virtctl version
+
+# Check current project
+oc project
+Task 1: Launch VM from the Web Console
+Subtask 1.1: Navigate to Virtualization Dashboard
+Access the Virtualization Section
+
+In the OpenShift web console, click on Virtualization in the left navigation menu
+You should see the virtualization dashboard with options for VirtualMachines, Templates, and InstanceTypes
+Explore the Dashboard
+
+Take note of the different tabs: VirtualMachines, Templates, InstanceTypes
+Observe any existing virtual machines (if any)
+Check the status indicators and resource usage displays
+Subtask 1.2: Create a New Virtual Machine
+Start VM Creation Process
+
+Click on the VirtualMachines tab
+Click the Create button
+Select From template option
+Choose VM Template
+
+Select a Linux-based template (e.g., Fedora or CentOS)
+Click Quick create VirtualMachine for simplified setup
+Alternatively, click Customize VirtualMachine for advanced options
+Configure Basic VM Settings
+
+# Example VM configuration (if using YAML view)
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: lab4-test-vm
+  namespace: default
+spec:
+  running: false
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: lab4-test-vm
+    spec:
+      domain:
+        cpu:
+          cores: 1
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: rootdisk
+          - disk:
+              bus: virtio
+            name: cloudinitdisk
+          interfaces:
+          - masquerade: {}
+            name: default
+        resources:
+          requests:
+            memory: 1Gi
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+      - dataVolume:
+          name: lab4-test-vm
+        name: rootdisk
+      - cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            user: fedora
+            password: fedora
+            chpasswd: { expire: False }
+        name: cloudinitdisk
+Set VM Parameters
+
+Name: lab4-test-vm
+Memory: 1 GiB
+CPU: 1 core
+Storage: 10 GiB
+Operating System: Fedora (or available Linux distribution)
+Subtask 1.3: Deploy the Virtual Machine
+Review Configuration
+
+Verify all settings are correct
+Check resource allocations
+Ensure network configuration is appropriate
+Create the VM
+
+Click Create VirtualMachine
+Wait for the VM to be created (status will show as Stopped)
+Note the VM appears in the VirtualMachines list
+Start the Virtual Machine
+
+Click on your newly created VM name
+Click the Actions dropdown
+Select Start VirtualMachine
+Wait for status to change to Running
+Task 2: Access the VM's Console via VNC
+Subtask 2.1: Access VNC Console Through Web Interface
+Navigate to VM Console
+
+From the VirtualMachines list, click on your running VM
+Click on the Console tab
+The VNC console should load automatically
+Interact with the Console
+
+You should see the VM's boot process or login screen
+If prompted, log in using the credentials set during VM creation
+Default credentials are often:
+Username: fedora (or centos depending on template)
+Password: fedora (or as configured)
+Test Console Functionality
+
+# Once logged into the VM console, try these commands:
+whoami
+hostname
+ip addr show
+df -h
+free -m
+Subtask 2.2: Console Connection Options
+Explore Console Settings
+
+Click on the Console settings (gear icon)
+Note available options:
+VNC Console (default)
+Serial Console (if available)
+Desktop Viewer (for graphical sessions)
+Test Different Console Types
+
+Switch between VNC and Serial console if available
+Note the differences in functionality and display
+Console Troubleshooting
+
+If console doesn't load, check VM status
+Verify the VM has fully booted
+Try refreshing the browser page
+Check for any error messages in the console area
+Subtask 2.3: Advanced Console Features
+Console Keyboard Shortcuts
+
+Learn common VNC shortcuts:
+Ctrl+Alt+Del: Send to VM (use browser button)
+Full Screen: Use browser full-screen option
+Copy/Paste: May require special handling
+Console Performance Optimization
+
+Adjust console quality settings if available
+Test responsiveness with different network conditions
+Note any lag or display issues
+Task 3: Use CLI Tools to Start and Stop the VM
+Subtask 3.1: VM Management with OpenShift CLI
+List Virtual Machines
+
+# List all VMs in current namespace
+oc get vm
+
+# Get detailed information about VMs
+oc get vm -o wide
+
+# Describe specific VM
+oc describe vm lab4-test-vm
+Check VM Status
+
+# Check VM instance status
+oc get vmi
+
+# Get detailed VM instance information
+oc get vmi lab4-test-vm -o yaml
+
+# Check VM events
+oc get events --field-selector involvedObject.name=lab4-test-vm
+Subtask 3.2: VM Lifecycle Management with virtctl
+Install and Verify virtctl (if not already available)
+
+# Check if virtctl is installed
+which virtctl
+
+# If not installed, download it
+# Note: In the lab environment, virtctl should already be available
+virtctl version
+Stop the Virtual Machine
+
+# Stop VM using virtctl
+virtctl stop lab4-test-vm
+
+# Verify VM is stopped
+oc get vm lab4-test-vm
+
+# Check that VMI is terminated
+oc get vmi
+Start the Virtual Machine
+
+# Start VM using virtctl
+virtctl start lab4-test-vm
+
+# Monitor startup process
+oc get vm lab4-test-vm -w
+
+# Verify VM is running
+oc get vmi lab4-test-vm
+Subtask 3.3: Advanced CLI Operations
+Restart Virtual Machine
+
+# Restart VM (stop and start)
+virtctl restart lab4-test-vm
+
+# Force restart if needed
+virtctl restart lab4-test-vm --force
+Pause and Unpause VM
+
+# Pause VM execution
+virtctl pause vmi lab4-test-vm
+
+# Check paused status
+oc get vmi lab4-test-vm -o jsonpath='{.status.phase}'
+
+# Unpause VM
+virtctl unpause vmi lab4-test-vm
+Access VM via CLI Console
+
+# Connect to VM console via CLI
+virtctl console lab4-test-vm
+
+# To exit console, use: Ctrl+] or type 'exit'
+
+# Connect with VNC viewer
+virtctl vnc lab4-test-vm
+Subtask 3.4: VM Resource Monitoring
+Monitor VM Resources
+
+# Check VM resource usage
+oc top vmi
+
+# Get detailed resource information
+oc get vmi lab4-test-vm -o jsonpath='{.status.guestOSInfo}'
+
+# Check VM conditions
+oc get vmi lab4-test-vm -o jsonpath='{.status.conditions[*].type}'
+View VM Logs
+
+# Get VM-related pod logs
+oc get pods -l kubevirt.io/vm=lab4-test-vm
+
+# View virt-launcher pod logs
+oc logs -l kubevirt.io/vm=lab4-test-vm
+Troubleshooting Common Issues
+Console Access Problems
+VNC Console Not Loading
+
+# Check VM status
+oc get vm lab4-test-vm
+oc get vmi lab4-test-vm
+
+# Verify VM is running
+oc describe vmi lab4-test-vm
+
+# Check for errors in events
+oc get events --sort-by='.lastTimestamp'
+Console Connection Timeout
+
+Verify network connectivity
+Check browser security settings
+Try different browser or incognito mode
+Ensure WebSocket connections are allowed
+CLI Command Issues
+virtctl Command Not Found
+
+# Check if virtctl is in PATH
+echo $PATH
+
+# Find virtctl location
+find /usr -name virtctl 2>/dev/null
+
+# Use oc plugin if virtctl not available
+oc plugin list | grep virt
+Permission Denied Errors
+
+# Check current user permissions
+oc auth can-i create vm
+oc auth can-i get vmi
+
+# Verify project access
+oc project
+oc get rolebindings
+VM Startup Issues
+VM Fails to Start
+# Check VM configuration
+oc get vm lab4-test-vm -o yaml
+
+# Look for error conditions
+oc describe vm lab4-test-vm
+
+# Check resource availability
+oc describe nodes
+Verification and Testing
+Task Completion Checklist
+VM Creation Verification
+
+ VM successfully created through web console
+ VM shows in VirtualMachines list
+ VM can be started and shows Running status
+Console Access Verification
+
+ VNC console loads successfully
+ Can interact with VM through console
+ Can execute commands within VM
+ Console responds to keyboard input
+CLI Management Verification
+
+ Can list VMs using oc get vm
+ Can start VM using virtctl start
+ Can stop VM using virtctl stop
+ Can access console using virtctl console
+Final Testing Commands
+# Complete verification script
+echo "=== VM Status Check ==="
+oc get vm lab4-test-vm
+oc get vmi lab4-test-vm
+
+echo "=== VM Resource Usage ==="
+oc top vmi lab4-test-vm
+
+echo "=== VM Network Information ==="
+oc get vmi lab4-test-vm -o jsonpath='{.status.interfaces[*].ipAddress}'
+
+echo "=== Cleanup (Optional) ==="
+# Uncomment to clean up resources
+# virtctl stop lab4-test-vm
+# oc delete vm lab4-test-vm
+Conclusion
+In this lab, you have successfully accomplished several key objectives in OpenShift Virtualization management:
+
+What You Learned:
+
+Web Console VM Management: You learned to navigate the OpenShift Virtualization interface, create virtual machines using templates, and manage their lifecycle through the graphical interface
+VNC Console Access: You gained hands-on experience accessing VM consoles through web-based VNC connections, enabling direct interaction with virtual machine operating systems
+CLI-Based VM Operations: You mastered using both oc and virtctl command-line tools to manage virtual machine states, monitor resources, and troubleshoot issues
+Why This Matters: This lab provides essential skills for managing virtualized workloads in modern container platforms. OpenShift Virtualization bridges traditional VM management with cloud-native operations, allowing organizations to:
+
+Unified Management: Manage both containers and VMs through a single platform
+Operational Consistency: Apply the same operational practices to both workload types
+Resource Efficiency: Leverage Kubernetes scheduling and resource management for VMs
+Hybrid Workloads: Support applications that require both containerized and virtualized components
+Real-World Applications: The skills you've developed are directly applicable to enterprise environments where organizations are modernizing their infrastructure while maintaining legacy applications that require virtual machines. This hybrid approach is increasingly common in digital transformation initiatives.
+
+Next Steps: Consider exploring advanced topics such as VM migration, storage management, network policies for VMs, and integration with CI/CD pipelines for infrastructure as code approaches to VM management.
+
+You now have the foundational skills to effectively manage virtual machines in OpenShift environments, combining the flexibility of traditional virtualization with the power of modern container orchestration platforms.

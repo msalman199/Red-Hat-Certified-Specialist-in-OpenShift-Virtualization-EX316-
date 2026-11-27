@@ -1,0 +1,512 @@
+Lab 5: Configure VM Networking in OpenShift Virtualization
+Objectives
+By the end of this lab, you will be able to:
+
+Configure static IP addresses for virtual machines in OpenShift Virtualization
+Create and implement Network Policies to control VM communication
+Test network connectivity between VMs and external networks
+Understand OpenShift's Software Defined Networking (SDN) for virtualization workloads
+Troubleshoot common VM networking issues in OpenShift environments
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes networking concepts
+Familiarity with OpenShift CLI (oc) commands
+Knowledge of YAML configuration files
+Understanding of IP networking fundamentals (subnets, routing, DNS)
+Completed previous OpenShift Virtualization labs or equivalent experience
+Access to an OpenShift cluster with OpenShift Virtualization operator installed
+Lab Environment Setup
+Ready-to-Use Cloud Machines: Al Nafi provides pre-configured Linux-based cloud machines with OpenShift Virtualization already installed. Simply click Start Lab to access your environment - no need to build your own VM or install software.
+
+Your lab environment includes:
+
+OpenShift 4.14+ cluster with 3 worker nodes
+OpenShift Virtualization operator pre-installed
+kubectl and oc CLI tools configured
+Sample VM templates ready for deployment
+Task 1: Assign Static IPs to VMs
+Subtask 1.1: Create a Custom Network Attachment Definition
+First, we'll create a custom network that allows static IP assignment for our VMs.
+
+Create a new project for this lab:
+oc new-project vm-networking-lab
+Create a Network Attachment Definition (NAD) for static IP assignment:
+Create a file named static-network-nad.yaml:
+
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: static-vm-network
+  namespace: vm-networking-lab
+spec:
+  config: |
+    {
+      "cniVersion": "0.3.1",
+      "type": "bridge",
+      "bridge": "br-static",
+      "isDefaultGateway": false,
+      "ipMasq": false,
+      "hairpinMode": true,
+      "ipam": {
+        "type": "static"
+      }
+    }
+Apply the Network Attachment Definition:
+oc apply -f static-network-nad.yaml
+Verify the NAD was created successfully:
+oc get network-attachment-definitions -n vm-networking-lab
+Subtask 1.2: Create VMs with Static IP Configuration
+Create the first VM with static IP assignment:
+Create a file named vm1-static-ip.yaml:
+
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: vm1-static
+  namespace: vm-networking-lab
+  labels:
+    app: vm1-static
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: vm1-static
+    spec:
+      domain:
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: containerdisk
+          - disk:
+              bus: virtio
+            name: cloudinitdisk
+          interfaces:
+          - name: default
+            masquerade: {}
+          - name: static-net
+            bridge: {}
+        machine:
+          type: ""
+        resources:
+          requests:
+            memory: 1Gi
+            cpu: 1
+      networks:
+      - name: default
+        pod: {}
+      - name: static-net
+        multus:
+          networkName: static-vm-network
+      volumes:
+      - name: containerdisk
+        containerDisk:
+          image: quay.io/kubevirt/fedora-cloud-container-disk-demo:latest
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          networkData: |
+            version: 2
+            ethernets:
+              eth1:
+                addresses:
+                - 192.168.100.10/24
+                gateway4: 192.168.100.1
+                nameservers:
+                  addresses:
+                  - 8.8.8.8
+                  - 8.8.4.4
+          userData: |
+            #cloud-config
+            user: fedora
+            password: fedora
+            chpasswd: { expire: False }
+            ssh_authorized_keys:
+            - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC2G...
+Create the second VM with a different static IP:
+Create a file named vm2-static-ip.yaml:
+
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: vm2-static
+  namespace: vm-networking-lab
+  labels:
+    app: vm2-static
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: vm2-static
+    spec:
+      domain:
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: containerdisk
+          - disk:
+              bus: virtio
+            name: cloudinitdisk
+          interfaces:
+          - name: default
+            masquerade: {}
+          - name: static-net
+            bridge: {}
+        machine:
+          type: ""
+        resources:
+          requests:
+            memory: 1Gi
+            cpu: 1
+      networks:
+      - name: default
+        pod: {}
+      - name: static-net
+        multus:
+          networkName: static-vm-network
+      volumes:
+      - name: containerdisk
+        containerDisk:
+          image: quay.io/kubevirt/fedora-cloud-container-disk-demo:latest
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          networkData: |
+            version: 2
+            ethernets:
+              eth1:
+                addresses:
+                - 192.168.100.20/24
+                gateway4: 192.168.100.1
+                nameservers:
+                  addresses:
+                  - 8.8.8.8
+                  - 8.8.4.4
+          userData: |
+            #cloud-config
+            user: fedora
+            password: fedora
+            chpasswd: { expire: False }
+Deploy both VMs:
+oc apply -f vm1-static-ip.yaml
+oc apply -f vm2-static-ip.yaml
+Verify VMs are running:
+oc get vms -n vm-networking-lab
+oc get vmis -n vm-networking-lab
+Subtask 1.3: Verify Static IP Assignment
+Check VM network configuration:
+# Connect to VM1
+virtctl console vm1-static -n vm-networking-lab
+
+# Inside the VM, check IP configuration
+ip addr show eth1
+Verify connectivity between VMs:
+# From VM1, ping VM2
+ping 192.168.100.20
+
+# Exit the console
+# Press Ctrl+] to exit console
+Task 2: Create Network Policies to Control VM Communication
+Subtask 2.1: Create Default Deny Network Policy
+Network Policies in OpenShift control traffic flow between pods and VMs at the IP address or port level.
+
+Create a default deny-all network policy:
+Create a file named default-deny-policy.yaml:
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: vm-networking-lab
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+Apply the default deny policy:
+oc apply -f default-deny-policy.yaml
+Subtask 2.2: Create Selective Allow Policies
+Create a policy to allow VM-to-VM communication:
+Create a file named allow-vm-to-vm.yaml:
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-vm-to-vm
+  namespace: vm-networking-lab
+spec:
+  podSelector:
+    matchLabels:
+      kubevirt.io/vm: vm1-static
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          kubevirt.io/vm: vm2-static
+    ports:
+    - protocol: TCP
+      port: 22
+    - protocol: ICMP
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          kubevirt.io/vm: vm2-static
+    ports:
+    - protocol: TCP
+      port: 22
+    - protocol: ICMP
+  - to: {}
+    ports:
+    - protocol: UDP
+      port: 53
+Create a reciprocal policy for VM2:
+Create a file named allow-vm2-to-vm1.yaml:
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-vm2-to-vm1
+  namespace: vm-networking-lab
+spec:
+  podSelector:
+    matchLabels:
+      kubevirt.io/vm: vm2-static
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          kubevirt.io/vm: vm1-static
+    ports:
+    - protocol: TCP
+      port: 22
+    - protocol: ICMP
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          kubevirt.io/vm: vm1-static
+    ports:
+    - protocol: TCP
+      port: 22
+    - protocol: ICMP
+  - to: {}
+    ports:
+    - protocol: UDP
+      port: 53
+Apply the network policies:
+oc apply -f allow-vm-to-vm.yaml
+oc apply -f allow-vm2-to-vm1.yaml
+Subtask 2.3: Create External Access Policy
+Create a policy allowing external internet access:
+Create a file named allow-external-access.yaml:
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-external-access
+  namespace: vm-networking-lab
+spec:
+  podSelector:
+    matchLabels:
+      kubevirt.io/vm: vm1-static
+  policyTypes:
+  - Egress
+  egress:
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 80
+    - protocol: TCP
+      port: 443
+    - protocol: UDP
+      port: 53
+Apply the external access policy:
+oc apply -f allow-external-access.yaml
+Verify all network policies are created:
+oc get networkpolicies -n vm-networking-lab
+Task 3: Test VM-to-VM and VM-to-External Network Communication
+Subtask 3.1: Test VM-to-VM Communication
+Test connectivity between VMs using static IPs:
+# Connect to VM1
+virtctl console vm1-static -n vm-networking-lab
+
+# Test ping to VM2
+ping -c 4 192.168.100.20
+
+# Test SSH connectivity (if SSH is configured)
+ssh fedora@192.168.100.20
+Test from VM2 to VM1:
+# Exit VM1 console and connect to VM2
+# Press Ctrl+] to exit
+virtctl console vm2-static -n vm-networking-lab
+
+# Test ping to VM1
+ping -c 4 192.168.100.10
+Subtask 3.2: Test External Network Communication
+Test internet connectivity from VM1:
+# From VM1 console
+ping -c 4 8.8.8.8
+
+# Test DNS resolution
+nslookup google.com
+
+# Test HTTP connectivity
+curl -I http://httpbin.org/get
+Test blocked traffic:
+# Try to access a port that should be blocked
+curl -I http://httpbin.org:8080/get
+# This should fail due to network policy restrictions
+Subtask 3.3: Monitor Network Traffic
+Check network policy enforcement:
+# View network policy details
+oc describe networkpolicy default-deny-all -n vm-networking-lab
+oc describe networkpolicy allow-vm-to-vm -n vm-networking-lab
+Monitor VM network interfaces:
+# Check VM network status
+oc get vmis -n vm-networking-lab -o wide
+
+# View detailed network information
+oc describe vmi vm1-static -n vm-networking-lab
+Test network policy modifications:
+Create a file named allow-web-access.yaml:
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-web-access
+  namespace: vm-networking-lab
+spec:
+  podSelector:
+    matchLabels:
+      kubevirt.io/vm: vm2-static
+  policyTypes:
+  - Egress
+  egress:
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 80
+    - protocol: TCP
+      port: 443
+    - protocol: UDP
+      port: 53
+Apply and test:
+
+oc apply -f allow-web-access.yaml
+
+# Test from VM2
+virtctl console vm2-static -n vm-networking-lab
+curl -I http://httpbin.org/get
+Troubleshooting Common Issues
+Issue 1: VMs Not Getting Static IPs
+Symptoms: VMs start but don't have the expected static IP addresses.
+
+Solution:
+
+# Check network attachment definition
+oc get network-attachment-definitions -n vm-networking-lab
+
+# Verify VM network configuration
+oc describe vmi vm1-static -n vm-networking-lab
+
+# Check cloud-init logs inside VM
+sudo journalctl -u cloud-init
+Issue 2: Network Policies Not Working
+Symptoms: Traffic is allowed when it should be blocked, or blocked when it should be allowed.
+
+Solution:
+
+# Verify network policies are applied
+oc get networkpolicies -n vm-networking-lab
+
+# Check pod labels match policy selectors
+oc get pods -n vm-networking-lab --show-labels
+
+# Test with temporary policy removal
+oc delete networkpolicy default-deny-all -n vm-networking-lab
+Issue 3: VM Console Connection Issues
+Symptoms: Cannot connect to VM console using virtctl.
+
+Solution:
+
+# Check VM status
+oc get vms -n vm-networking-lab
+oc get vmis -n vm-networking-lab
+
+# Verify virtctl is properly configured
+virtctl version
+
+# Try alternative connection method
+oc get pods -n vm-networking-lab
+oc exec -it <virt-launcher-pod> -- /bin/bash
+Verification and Testing Scripts
+Create a comprehensive test script named network-test.sh:
+
+#!/bin/bash
+
+echo "=== VM Networking Lab Verification ==="
+
+# Test 1: Check VMs are running
+echo "1. Checking VM status..."
+oc get vms -n vm-networking-lab
+oc get vmis -n vm-networking-lab
+
+# Test 2: Verify network policies
+echo "2. Checking network policies..."
+oc get networkpolicies -n vm-networking-lab
+
+# Test 3: Check network attachment definitions
+echo "3. Checking network attachment definitions..."
+oc get network-attachment-definitions -n vm-networking-lab
+
+# Test 4: Verify VM network interfaces
+echo "4. Checking VM network interfaces..."
+for vm in vm1-static vm2-static; do
+    echo "Checking $vm network configuration..."
+    oc describe vmi $vm -n vm-networking-lab | grep -A 10 "Networks:"
+done
+
+echo "=== Verification Complete ==="
+Make it executable and run:
+
+chmod +x network-test.sh
+./network-test.sh
+Lab Cleanup
+When you're finished with the lab, clean up the resources:
+
+# Delete VMs
+oc delete vm vm1-static vm2-static -n vm-networking-lab
+
+# Delete network policies
+oc delete networkpolicy --all -n vm-networking-lab
+
+# Delete network attachment definition
+oc delete network-attachment-definitions static-vm-network -n vm-networking-lab
+
+# Delete the project
+oc delete project vm-networking-lab
+Conclusion
+In this comprehensive lab, you have successfully:
+
+Configured static IP addresses for virtual machines using Network Attachment Definitions and cloud-init, providing predictable network addressing for VM workloads
+Implemented Network Policies to control traffic flow between VMs and external networks, demonstrating micro-segmentation capabilities in OpenShift Virtualization
+Tested various network communication scenarios including VM-to-VM, VM-to-external, and policy-restricted traffic flows
+Gained hands-on experience with OpenShift's Software Defined Networking (SDN) for virtualization workloads
+Why This Matters: Network configuration and security are critical aspects of virtualization in production environments. The skills you've developed enable you to:
+
+Design secure, isolated network segments for different application tiers
+Implement zero-trust networking principles in virtualized environments
+Troubleshoot complex networking issues in OpenShift Virtualization deployments
+Meet compliance requirements through network segmentation and access controls
+These networking capabilities are essential for the Red Hat Certified Specialist in OpenShift Virtualization certification and real-world enterprise deployments where security, isolation, and controlled communication between workloads are paramount.
+
+The combination of static IP assignment and Network Policies provides a robust foundation for building secure, scalable virtualized applications in OpenShift environments.

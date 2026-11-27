@@ -1,0 +1,61 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachineInstance
+metadata:
+  name: cpu-optimized-vmi
+  namespace: vmi-lab
+  labels:
+    app: cpu-optimized-vm
+    tier: performance
+spec:
+  domain:
+    cpu:
+      cores: 2
+      sockets: 1
+      threads: 2
+      model: host-model
+      features:
+      - name: apic
+        policy: require
+      - name: hypervisor
+        policy: require
+    memory:
+      guest: 2Gi
+      hugepages:
+        pageSize: 2Mi
+    devices:
+      disks:
+      - name: containerdisk
+        disk:
+          bus: virtio
+      - name: cloudinitdisk
+        disk:
+          bus: virtio
+      interfaces:
+      - name: default
+        masquerade: {}
+    machine:
+      type: q35
+    resources:
+      requests:
+        memory: 2Gi
+        cpu: 2
+      limits:
+        memory: 2Gi
+        cpu: 2
+  networks:
+  - name: default
+    pod: {}
+  volumes:
+  - name: containerdisk
+    containerDisk:
+      image: quay.io/kubevirt/fedora-cloud-container-disk-demo
+  - name: cloudinitdisk
+    cloudInitNoCloud:
+      userData: |
+        #cloud-config
+        user: fedora
+        password: fedora
+        chpasswd: { expire: False }
+        ssh_pwauth: True
+        runcmd:
+        - echo "CPU optimized VM started" > /tmp/startup.log

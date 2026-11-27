@@ -1,0 +1,54 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachineInstance
+metadata:
+  name: memory-optimized-vmi
+  namespace: vmi-lab
+  labels:
+    app: memory-optimized-vm
+    workload-type: memory-intensive
+spec:
+  domain:
+    cpu:
+      cores: 1
+    memory:
+      guest: 4Gi
+      hugepages:
+        pageSize: 1Gi
+    devices:
+      disks:
+      - name: containerdisk
+        disk:
+          bus: virtio
+      - name: cloudinitdisk
+        disk:
+          bus: virtio
+      interfaces:
+      - name: default
+        masquerade: {}
+    machine:
+      type: q35
+    resources:
+      requests:
+        memory: 4Gi
+        cpu: 1
+      limits:
+        memory: 4Gi
+        cpu: 1
+  networks:
+  - name: default
+    pod: {}
+  volumes:
+  - name: containerdisk
+    containerDisk:
+      image: quay.io/kubevirt/fedora-cloud-container-disk-demo
+  - name: cloudinitdisk
+    cloudInitNoCloud:
+      userData: |
+        #cloud-config
+        user: fedora
+        password: fedora
+        chpasswd: { expire: False }
+        ssh_pwauth: True
+        runcmd:
+        - echo "Memory optimized VM with 4GB RAM" > /tmp/memory-info.txt
+        - free -h >> /tmp/memory-info.txt
