@@ -1,0 +1,34 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-vm2-to-vm1
+  namespace: vm-networking-lab
+spec:
+  podSelector:
+    matchLabels:
+      kubevirt.io/vm: vm2-static
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          kubevirt.io/vm: vm1-static
+    ports:
+    - protocol: TCP
+      port: 22
+    - protocol: ICMP
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          kubevirt.io/vm: vm1-static
+    ports:
+    - protocol: TCP
+      port: 22
+    - protocol: ICMP
+  - to: {}
+    ports:
+    - protocol: UDP
+      port: 53

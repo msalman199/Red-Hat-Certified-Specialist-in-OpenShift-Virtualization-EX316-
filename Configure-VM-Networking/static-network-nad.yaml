@@ -1,0 +1,18 @@
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: static-vm-network
+  namespace: vm-networking-lab
+spec:
+  config: |
+    {
+      "cniVersion": "0.3.1",
+      "type": "bridge",
+      "bridge": "br-static",
+      "isDefaultGateway": false,
+      "ipMasq": false,
+      "hairpinMode": true,
+      "ipam": {
+        "type": "static"
+      }
+    }
