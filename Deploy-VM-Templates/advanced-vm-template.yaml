@@ -1,0 +1,128 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: advanced-vm-template
+  namespace: vm-templates
+  labels:
+    template: advanced-vm
+    workload.template.kubevirt.io/server: "true"
+  annotations:
+    name.os.template.kubevirt.io/rhel8: Red Hat Enterprise Linux 8
+    description: "Advanced VM template with persistent storage and custom networking"
+objects:
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: ${VM_NAME}-disk
+    namespace: ${NAMESPACE}
+  spec:
+    accessModes:
+    - ReadWriteOnce
+    resources:
+      requests:
+        storage: ${STORAGE_SIZE}
+    storageClassName: ${STORAGE_CLASS}
+- apiVersion: kubevirt.io/v1
+  kind: VirtualMachine
+  metadata:
+    name: ${VM_NAME}
+    namespace: ${NAMESPACE}
+    labels:
+      app: ${VM_NAME}
+      template: advanced-vm
+      environment: ${ENVIRONMENT}
+  spec:
+    running: false
+    template:
+      metadata:
+        labels:
+          kubevirt.io/domain: ${VM_NAME}
+      spec:
+        domain:
+          cpu:
+            cores: ${{CPU_CORES}}
+            threads: ${{CPU_THREADS}}
+          memory:
+            guest: ${MEMORY}
+          devices:
+            disks:
+            - name: rootdisk
+              disk:
+                bus: virtio
+            - name: datadisk
+              disk:
+                bus: virtio
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+            interfaces:
+            - name: default
+              masquerade: {}
+            networkInterfaceMultiqueue: true
+            rng: {}
+        networks:
+        - name: default
+          pod: {}
+        volumes:
+        - name: rootdisk
+          containerDisk:
+            image: ${DISK_IMAGE}
+        - name: datadisk
+          persistentVolumeClaim:
+            claimName: ${VM_NAME}-disk
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            userData: |
+              #cloud-config
+              user: ${VM_USER}
+              password: ${VM_PASSWORD}
+              chpasswd: { expire: False }
+              ssh_authorized_keys:
+                - ${SSH_PUBLIC_KEY}
+              packages:
+                - htop
+                - vim
+                - curl
+                - wget
+              runcmd:
+                - systemctl enable sshd
+                - systemctl start sshd
+                - mkdir -p /data
+                - mount /dev/vdb /data
+parameters:
+- name: VM_NAME
+  description: Name of the Virtual Machine
+  required: true
+- name: NAMESPACE
+  description: Namespace for the VM
+  value: vm-templates
+- name: CPU_CORES
+  description: Number of CPU cores
+  value: "4"
+- name: CPU_THREADS
+  description: Number of CPU threads per core
+  value: "1"
+- name: MEMORY
+  description: Memory allocation
+  value: 8Gi
+- name: STORAGE_SIZE
+  description: Persistent storage size
+  value: 20Gi
+- name: STORAGE_CLASS
+  description: Storage class for persistent volume
+  value: standard
+- name: DISK_IMAGE
+  description: Container disk image
+  value: quay.io/kubevirt/fedora-cloud-container-disk-demo
+- name: VM_USER
+  description: VM username
+  value: fedora
+- name: VM_PASSWORD
+  description: VM password
+  value: fedora123
+- name: SSH_PUBLIC_KEY
+  description: SSH public key for access
+  value: ""
+- name: ENVIRONMENT
+  description: Environment label (dev/test/prod)
+  value: dev

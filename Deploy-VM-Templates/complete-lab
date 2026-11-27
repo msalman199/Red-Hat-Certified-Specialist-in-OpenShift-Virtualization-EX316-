@@ -1,0 +1,909 @@
+Lab 7: Deploy VM Templates
+Objectives
+By the end of this lab, students will be able to:
+
+Create reusable VM templates with predefined configurations using OpenShift Virtualization
+Deploy multiple virtual machines efficiently using parameterized templates
+Write validation and monitoring scripts to verify VM deployment consistency and performance
+Understand template-based deployment best practices for standard, storage-backed, and database workloads
+Troubleshoot common template deployment and networking issues
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Kubernetes concepts (pods, services, namespaces)
+Familiarity with YAML configuration files and bash scripting
+Knowledge of Linux command line operations
+Understanding of virtualization concepts (CPU, memory, disks, networking)
+Completion of previous OpenShift Virtualization labs or equivalent experience
+Required Knowledge Areas
+OpenShift CLI (oc) commands
+Virtual machine lifecycle management
+Resource allocation and management
+Basic networking concepts in virtualized environments
+Basic bash scripting (loops, functions, conditionals)
+Lab Environment Setup
+Ready-to-Use Cloud Machines: Al Nafi provides pre-configured Linux-based cloud machines with OpenShift Virtualization already installed. Simply click Start Lab to access your environment - no need to build your own VM or install software.
+
+Your lab environment includes:
+
+OpenShift cluster with the Virtualization operator installed
+oc and kubectl CLI tools pre-configured
+Sample VM container-disk images available from quay.io/kubevirt
+Metrics server enabled so oc top commands work
+Verify your environment before starting:
+
+oc version
+oc get csv -A | grep -i kubevirt
+oc get nodes
+You should see the OpenShift CLI version, the KubeVirt/Virtualization operator listed as Succeeded, and a list of ready cluster nodes.
+
+Task 1: Create VM Templates with Predefined Configurations
+Subtask 1.1: Prepare the Template Namespace
+Create a dedicated namespace for VM templates.
+
+# Create a namespace for VM templates
+oc create namespace vm-templates
+
+# Set the current context to use our new namespace
+oc project vm-templates
+
+# Verify namespace creation
+oc get namespaces | grep vm-templates
+Deliverable: Output of oc get namespaces | grep vm-templates showing the vm-templates namespace in Active status.
+
+Subtask 1.2: Create a Basic VM Template
+Create a basic, general-purpose VM template that can be reused for multiple deployments.
+
+cat << 'EOF' > basic-vm-template.yaml
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: basic-vm-template
+  namespace: vm-templates
+  labels:
+    template: basic-vm
+    workload.template.kubevirt.io/server: "true"
+  annotations:
+    name.os.template.kubevirt.io/rhel8: Red Hat Enterprise Linux 8
+    description: "Basic VM template for RHEL-family VMs with standard configuration"
+objects:
+- apiVersion: kubevirt.io/v1
+  kind: VirtualMachine
+  metadata:
+    name: ${VM_NAME}
+    namespace: ${NAMESPACE}
+    labels:
+      app: ${VM_NAME}
+      template: basic-vm
+  spec:
+    running: false
+    template:
+      metadata:
+        labels:
+          kubevirt.io/domain: ${VM_NAME}
+      spec:
+        domain:
+          cpu:
+            cores: ${{CPU_CORES}}
+          memory:
+            guest: ${MEMORY}
+          devices:
+            disks:
+            - name: rootdisk
+              disk:
+                bus: virtio
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+            interfaces:
+            - name: default
+              masquerade: {}
+            networkInterfaceMultiqueue: true
+            rng: {}
+        networks:
+        - name: default
+          pod: {}
+        volumes:
+        - name: rootdisk
+          containerDisk:
+            image: ${DISK_IMAGE}
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            userData: |
+              #cloud-config
+              user: ${VM_USER}
+              password: ${VM_PASSWORD}
+              chpasswd: { expire: False }
+              ssh_authorized_keys:
+                - ${SSH_PUBLIC_KEY}
+parameters:
+- name: VM_NAME
+  description: Name of the Virtual Machine
+  required: true
+- name: NAMESPACE
+  description: Namespace for the VM
+  value: vm-templates
+- name: CPU_CORES
+  description: Number of CPU cores
+  value: "2"
+- name: MEMORY
+  description: Memory allocation
+  value: 4Gi
+- name: DISK_IMAGE
+  description: Container disk image
+  value: quay.io/kubevirt/fedora-cloud-container-disk-demo
+- name: VM_USER
+  description: VM username
+  value: fedora
+- name: VM_PASSWORD
+  description: VM password
+  value: fedora123
+- name: SSH_PUBLIC_KEY
+  description: SSH public key for access
+  value: ""
+EOF
+Apply the template to the cluster:
+
+oc apply -f basic-vm-template.yaml
+
+# Verify template creation
+oc get templates -n vm-templates
+Deliverable: oc get templates -n vm-templates lists basic-vm-template.
+
+Subtask 1.3: Create an Advanced VM Template
+Create a more advanced template with additional features like persistent storage and multiple CPU threads.
+
+cat << 'EOF' > advanced-vm-template.yaml
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: advanced-vm-template
+  namespace: vm-templates
+  labels:
+    template: advanced-vm
+    workload.template.kubevirt.io/server: "true"
+  annotations:
+    name.os.template.kubevirt.io/rhel8: Red Hat Enterprise Linux 8
+    description: "Advanced VM template with persistent storage and custom networking"
+objects:
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: ${VM_NAME}-disk
+    namespace: ${NAMESPACE}
+  spec:
+    accessModes:
+    - ReadWriteOnce
+    resources:
+      requests:
+        storage: ${STORAGE_SIZE}
+    storageClassName: ${STORAGE_CLASS}
+- apiVersion: kubevirt.io/v1
+  kind: VirtualMachine
+  metadata:
+    name: ${VM_NAME}
+    namespace: ${NAMESPACE}
+    labels:
+      app: ${VM_NAME}
+      template: advanced-vm
+      environment: ${ENVIRONMENT}
+  spec:
+    running: false
+    template:
+      metadata:
+        labels:
+          kubevirt.io/domain: ${VM_NAME}
+      spec:
+        domain:
+          cpu:
+            cores: ${{CPU_CORES}}
+            threads: ${{CPU_THREADS}}
+          memory:
+            guest: ${MEMORY}
+          devices:
+            disks:
+            - name: rootdisk
+              disk:
+                bus: virtio
+            - name: datadisk
+              disk:
+                bus: virtio
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+            interfaces:
+            - name: default
+              masquerade: {}
+            networkInterfaceMultiqueue: true
+            rng: {}
+        networks:
+        - name: default
+          pod: {}
+        volumes:
+        - name: rootdisk
+          containerDisk:
+            image: ${DISK_IMAGE}
+        - name: datadisk
+          persistentVolumeClaim:
+            claimName: ${VM_NAME}-disk
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            userData: |
+              #cloud-config
+              user: ${VM_USER}
+              password: ${VM_PASSWORD}
+              chpasswd: { expire: False }
+              ssh_authorized_keys:
+                - ${SSH_PUBLIC_KEY}
+              packages:
+                - htop
+                - vim
+                - curl
+                - wget
+              runcmd:
+                - systemctl enable sshd
+                - systemctl start sshd
+                - mkdir -p /data
+                - mount /dev/vdb /data
+parameters:
+- name: VM_NAME
+  description: Name of the Virtual Machine
+  required: true
+- name: NAMESPACE
+  description: Namespace for the VM
+  value: vm-templates
+- name: CPU_CORES
+  description: Number of CPU cores
+  value: "4"
+- name: CPU_THREADS
+  description: Number of CPU threads per core
+  value: "1"
+- name: MEMORY
+  description: Memory allocation
+  value: 8Gi
+- name: STORAGE_SIZE
+  description: Persistent storage size
+  value: 20Gi
+- name: STORAGE_CLASS
+  description: Storage class for persistent volume
+  value: standard
+- name: DISK_IMAGE
+  description: Container disk image
+  value: quay.io/kubevirt/fedora-cloud-container-disk-demo
+- name: VM_USER
+  description: VM username
+  value: fedora
+- name: VM_PASSWORD
+  description: VM password
+  value: fedora123
+- name: SSH_PUBLIC_KEY
+  description: SSH public key for access
+  value: ""
+- name: ENVIRONMENT
+  description: Environment label (dev/test/prod)
+  value: dev
+EOF
+Apply the advanced template:
+
+oc apply -f advanced-vm-template.yaml
+
+# List all templates
+oc get templates -n vm-templates
+Subtask 1.4: Create a Template for Database Workloads
+Create a specialized template optimized for database workloads with separate data and log volumes.
+
+cat << 'EOF' > database-vm-template.yaml
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: database-vm-template
+  namespace: vm-templates
+  labels:
+    template: database-vm
+    workload.template.kubevirt.io/server: "true"
+  annotations:
+    name.os.template.kubevirt.io/rhel8: Red Hat Enterprise Linux 8
+    description: "Database VM template with separate data and log storage"
+objects:
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: ${VM_NAME}-db-disk
+    namespace: ${NAMESPACE}
+  spec:
+    accessModes:
+    - ReadWriteOnce
+    resources:
+      requests:
+        storage: ${DB_STORAGE_SIZE}
+    storageClassName: ${STORAGE_CLASS}
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: ${VM_NAME}-log-disk
+    namespace: ${NAMESPACE}
+  spec:
+    accessModes:
+    - ReadWriteOnce
+    resources:
+      requests:
+        storage: ${LOG_STORAGE_SIZE}
+    storageClassName: ${STORAGE_CLASS}
+- apiVersion: kubevirt.io/v1
+  kind: VirtualMachine
+  metadata:
+    name: ${VM_NAME}
+    namespace: ${NAMESPACE}
+    labels:
+      app: ${VM_NAME}
+      template: database-vm
+      workload: database
+  spec:
+    running: false
+    template:
+      metadata:
+        labels:
+          kubevirt.io/domain: ${VM_NAME}
+      spec:
+        domain:
+          cpu:
+            cores: ${{CPU_CORES}}
+            threads: ${{CPU_THREADS}}
+          memory:
+            guest: ${MEMORY}
+          devices:
+            disks:
+            - name: rootdisk
+              disk:
+                bus: virtio
+            - name: dbdisk
+              disk:
+                bus: virtio
+            - name: logdisk
+              disk:
+                bus: virtio
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+            interfaces:
+            - name: default
+              masquerade: {}
+            networkInterfaceMultiqueue: true
+            rng: {}
+        networks:
+        - name: default
+          pod: {}
+        volumes:
+        - name: rootdisk
+          containerDisk:
+            image: ${DISK_IMAGE}
+        - name: dbdisk
+          persistentVolumeClaim:
+            claimName: ${VM_NAME}-db-disk
+        - name: logdisk
+          persistentVolumeClaim:
+            claimName: ${VM_NAME}-log-disk
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            userData: |
+              #cloud-config
+              user: ${VM_USER}
+              password: ${VM_PASSWORD}
+              chpasswd: { expire: False }
+              ssh_authorized_keys:
+                - ${SSH_PUBLIC_KEY}
+              packages:
+                - postgresql-server
+                - postgresql-contrib
+                - htop
+                - iotop
+              runcmd:
+                - systemctl enable sshd
+                - systemctl start sshd
+                - mkdir -p /var/lib/pgsql/data
+                - mkdir -p /var/log/postgresql
+                - mount /dev/vdb /var/lib/pgsql/data
+                - mount /dev/vdc /var/log/postgresql
+                - chown -R postgres:postgres /var/lib/pgsql/data
+                - chown -R postgres:postgres /var/log/postgresql
+parameters:
+- name: VM_NAME
+  description: Name of the Database VM
+  required: true
+- name: NAMESPACE
+  description: Namespace for the VM
+  value: vm-templates
+- name: CPU_CORES
+  description: Number of CPU cores
+  value: "8"
+- name: CPU_THREADS
+  description: Number of CPU threads per core
+  value: "2"
+- name: MEMORY
+  description: Memory allocation
+  value: 16Gi
+- name: DB_STORAGE_SIZE
+  description: Database storage size
+  value: 100Gi
+- name: LOG_STORAGE_SIZE
+  description: Log storage size
+  value: 20Gi
+- name: STORAGE_CLASS
+  description: Storage class for persistent volumes
+  value: standard
+- name: DISK_IMAGE
+  description: Container disk image
+  value: quay.io/kubevirt/fedora-cloud-container-disk-demo
+- name: VM_USER
+  description: VM username
+  value: fedora
+- name: VM_PASSWORD
+  description: VM password
+  value: fedora123
+- name: SSH_PUBLIC_KEY
+  description: SSH public key for access
+  value: ""
+EOF
+Apply the database template:
+
+oc apply -f database-vm-template.yaml
+
+# Verify all templates are created
+oc get templates -n vm-templates -o wide
+Deliverable for Task 1: oc get templates -n vm-templates shows exactly three templates: basic-vm-template, advanced-vm-template, and database-vm-template. Each template's parameters can be listed with oc describe template <name> -n vm-templates without errors.
+
+Task 2: Deploy VMs Using These Templates
+Subtask 2.1: Deploy VMs from the Basic Template
+Generate an SSH key and deploy three basic VMs with different resource profiles.
+
+# Generate SSH key pair for VM access (press Enter through prompts)
+ssh-keygen -t rsa -b 4096 -f ~/.ssh/vm_key -N ""
+
+# Get the public key content
+VM_SSH_KEY=$(cat ~/.ssh/vm_key.pub)
+
+# Deploy first basic VM
+oc process basic-vm-template \
+  -p VM_NAME=basic-vm-01 \
+  -p NAMESPACE=vm-templates \
+  -p CPU_CORES=2 \
+  -p MEMORY=4Gi \
+  -p SSH_PUBLIC_KEY="$VM_SSH_KEY" \
+  | oc apply -f -
+
+# Deploy second basic VM with more resources
+oc process basic-vm-template \
+  -p VM_NAME=basic-vm-02 \
+  -p NAMESPACE=vm-templates \
+  -p CPU_CORES=4 \
+  -p MEMORY=8Gi \
+  -p SSH_PUBLIC_KEY="$VM_SSH_KEY" \
+  | oc apply -f -
+
+# Deploy third basic VM with minimal resources
+oc process basic-vm-template \
+  -p VM_NAME=basic-vm-03 \
+  -p NAMESPACE=vm-templates \
+  -p CPU_CORES=1 \
+  -p MEMORY=2Gi \
+  -p SSH_PUBLIC_KEY="$VM_SSH_KEY" \
+  | oc apply -f -
+Subtask 2.2: Deploy the Advanced and Database VMs
+# Deploy advanced VM with persistent storage
+oc process advanced-vm-template \
+  -p VM_NAME=advanced-vm-01 \
+  -p NAMESPACE=vm-templates \
+  -p CPU_CORES=4 \
+  -p MEMORY=8Gi \
+  -p STORAGE_SIZE=20Gi \
+  -p ENVIRONMENT=production \
+  -p SSH_PUBLIC_KEY="$VM_SSH_KEY" \
+  | oc apply -f -
+
+# Deploy database VM
+oc process database-vm-template \
+  -p VM_NAME=postgres-vm-01 \
+  -p NAMESPACE=vm-templates \
+  -p CPU_CORES=4 \
+  -p MEMORY=8Gi \
+  -p DB_STORAGE_SIZE=50Gi \
+  -p LOG_STORAGE_SIZE=10Gi \
+  -p SSH_PUBLIC_KEY="$VM_SSH_KEY" \
+  | oc apply -f -
+Start all five VMs and wait for them to come up:
+
+for vm in basic-vm-01 basic-vm-02 basic-vm-03 advanced-vm-01 postgres-vm-01; do
+  oc patch vm $vm -n vm-templates --type merge -p '{"spec":{"running":true}}'
+done
+
+# Poll status until all VMs report Running (Ctrl+C once all show Running)
+watch oc get vms -n vm-templates
+Deliverable for Task 2: oc get vms -n vm-templates shows five VMs (basic-vm-01, basic-vm-02, basic-vm-03, advanced-vm-01, postgres-vm-01), each with STATUS equal to Running. oc get pvc -n vm-templates shows three bound PVCs: advanced-vm-01-disk, postgres-vm-01-db-disk, and postgres-vm-01-log-disk.
+
+Task 3: Verify VM Deployment Consistency and Performance
+In this task you will write your own verification and validation scripts. Each subtask gives you a script skeleton with TODO markers describing exactly what logic to fill in, plus the oc commands and JSONPath fields you need. Do not simply copy an existing script from elsewhere in this document â�� implement the logic yourself using the hints given.
+
+Subtask 3.1: Verify VM Deployment Status
+Start with a quick manual check:
+
+# Get detailed VM information
+oc get vms -n vm-templates -o wide
+
+# Check VM instances (VMIs)
+oc get vmis -n vm-templates
+
+# Verify persistent volume claims
+oc get pvc -n vm-templates
+Confirm all five VMs are listed with STATUS=Running and all three PVCs show STATUS=Bound before continuing.
+
+Subtask 3.2: Write a Configuration Consistency Script
+Create verify-vm-consistency.sh and fill in the TODO sections so that, for each VM name passed to get_vm_specs, it prints the CPU core count, memory allocation, template label, and current status using oc get vm ... -o jsonpath=....
+
+cat << 'EOF' > verify-vm-consistency.sh
+#!/bin/bash
+set -euo pipefail
+
+NAMESPACE="vm-templates"
+
+# get_vm_specs prints the key configuration fields for a single VM.
+# TODO 1: Use "oc get vm <name> -n $NAMESPACE -o jsonpath=..." to print:
+#         - CPU cores            (path: .spec.template.spec.domain.cpu.cores)
+#         - Memory               (path: .spec.template.spec.domain.memory.guest)
+#         - Template label       (path: .metadata.labels.template)
+#         - Current status       (path: .status.printableStatus)
+get_vm_specs() {
+    local vm_name=$1
+    echo "VM: $vm_name"
+    # TODO 1: replace the placeholders below with real oc jsonpath commands
+    echo "  CPU Cores: <TODO>"
+    echo "  Memory: <TODO>"
+    echo "  Template: <TODO>"
+    echo "  Status: <TODO>"
+    echo
+}
+
+echo "=== VM Configuration Consistency Check ==="
+echo
+
+echo "Basic Template VMs:"
+# TODO 2: call get_vm_specs for basic-vm-01, basic-vm-02, basic-vm-03
+
+echo "Advanced Template VMs:"
+# TODO 3: call get_vm_specs for advanced-vm-01
+
+echo "Database Template VMs:"
+# TODO 4: call get_vm_specs for postgres-vm-01
+EOF
+
+chmod +x verify-vm-consistency.sh
+Reference solution (use only to check your own work after attempting the TODOs yourself):
+
+cat << 'EOF' > verify-vm-consistency.sh.solution
+#!/bin/bash
+set -euo pipefail
+
+NAMESPACE="vm-templates"
+
+get_vm_specs() {
+    local vm_name=$1
+    echo "VM: $vm_name"
+    echo "  CPU Cores: $(oc get vm $vm_name -n $NAMESPACE -o jsonpath='{.spec.template.spec.domain.cpu.cores}')"
+    echo "  Memory: $(oc get vm $vm_name -n $NAMESPACE -o jsonpath='{.spec.template.spec.domain.memory.guest}')"
+    echo "  Template: $(oc get vm $vm_name -n $NAMESPACE -o jsonpath='{.metadata.labels.template}')"
+    echo "  Status: $(oc get vm $vm_name -n $NAMESPACE -o jsonpath='{.status.printableStatus}')"
+    echo
+}
+
+echo "=== VM Configuration Consistency Check ==="
+echo
+
+echo "Basic Template VMs:"
+get_vm_specs "basic-vm-01"
+get_vm_specs "basic-vm-02"
+get_vm_specs "basic-vm-03"
+
+echo "Advanced Template VMs:"
+get_vm_specs "advanced-vm-01"
+
+echo "Database Template VMs:"
+get_vm_specs "postgres-vm-01"
+EOF
+Run your own version:
+
+chmod +x verify-vm-consistency.sh
+./verify-vm-consistency.sh
+Deliverable: Script output lists all five VMs grouped by template, each showing non-empty CPU core count, memory value, matching template label (basic-vm, advanced-vm, or database-vm), and status Running.
+
+Subtask 3.3: Write a Performance Monitoring Script
+Create monitor-vm-performance.sh. Fill in the TODOs so it reports, for each VM, the node it is scheduled on, its VMI phase, and CPU/memory usage of its virt-launcher pod.
+
+cat << 'EOF' > monitor-vm-performance.sh
+#!/bin/bash
+set -euo pipefail
+
+NAMESPACE="vm-templates"
+
+# get_vm_resources reports scheduling and resource usage for one VM.
+get_vm_resources() {
+    local vm_name=$1
+    echo "VM: $vm_name"
+
+    if oc get vmi $vm_name -n $NAMESPACE >/dev/null 2>&1; then
+        # TODO 1: print the node name the VMI is running on
+        #         (path: .status.nodeName)
+        echo "  Node: <TODO>"
+
+        # TODO 2: print the VMI phase
+        #         (path: .status.phase)
+        echo "  Phase: <TODO>"
+
+        # TODO 3: find the virt-launcher pod name for this VM using the
+        #         label selector kubevirt.io/domain=$vm_name, then use
+        #         "oc top pod <pod> -n $NAMESPACE --no-headers" to extract
+        #         the CPU (column 2) and memory (column 3) usage.
+        local pod_name
+        pod_name=$(oc get pods -n $NAMESPACE -l kubevirt.io/domain=$vm_name -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+        if [ -n "$pod_name" ]; then
+            echo "  Pod: $pod_name"
+            echo "  CPU Usage: <TODO>"
+            echo "  Memory Usage: <TODO>"
+        fi
+    else
+        echo "  Status: VMI not found or not running"
+    fi
+    echo
+}
+
+echo "=== VM Performance Monitoring ==="
+echo
+
+# TODO 4: call get_vm_resources for all five deployed VMs
+EOF
+
+chmod +x monitor-vm-performance.sh
+Reference solution:
+
+cat << 'EOF' > monitor-vm-performance.sh.solution
+#!/bin/bash
+set -euo pipefail
+
+NAMESPACE="vm-templates"
+
+get_vm_resources() {
+    local vm_name=$1
+    echo "VM: $vm_name"
+
+    if oc get vmi $vm_name -n $NAMESPACE >/dev/null 2>&1; then
+        echo "  Node: $(oc get vmi $vm_name -n $NAMESPACE -o jsonpath='{.status.nodeName}')"
+        echo "  Phase: $(oc get vmi $vm_name -n $NAMESPACE -o jsonpath='{.status.phase}')"
+
+        local pod_name
+        pod_name=$(oc get pods -n $NAMESPACE -l kubevirt.io/domain=$vm_name -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+        if [ -n "$pod_name" ]; then
+            echo "  Pod: $pod_name"
+            local usage
+            usage=$(oc top pod $pod_name -n $NAMESPACE --no-headers 2>/dev/null || true)
+            echo "  CPU Usage: $(echo "$usage" | awk '{print $2}')"
+            echo "  Memory Usage: $(echo "$usage" | awk '{print $3}')"
+        fi
+    else
+        echo "  Status: VMI not found or not running"
+    fi
+    echo
+}
+
+echo "=== VM Performance Monitoring ==="
+echo
+
+for vm in basic-vm-01 basic-vm-02 basic-vm-03 advanced-vm-01 postgres-vm-01; do
+    get_vm_resources "$vm"
+done
+EOF
+Run your own version:
+
+chmod +x monitor-vm-performance.sh
+./monitor-vm-performance.sh
+Deliverable: Output shows a node name and phase Running for each VM, plus a pod name and non-empty CPU/memory usage figures (metrics may show 0m/0Mi shortly after boot, which is acceptable).
+
+Subtask 3.4: Write a Template Deployment Validation Script
+Create validate-template-deployment.sh. This script must check, for each VM, that it exists, carries the correct template label, and is Running, then print a pass/fail summary. Fill in the TODOs.
+
+cat << 'EOF' > validate-template-deployment.sh
+#!/bin/bash
+set -uo pipefail
+
+NAMESPACE="vm-templates"
+PASSED=0
+FAILED=0
+
+# validate_vm checks one VM against its expected template label and running state.
+validate_vm() {
+    local vm_name=$1
+    local expected_template=$2
+
+    echo "Validating VM: $vm_name"
+
+    # TODO 1: check the VM exists with "oc get vm $vm_name -n $NAMESPACE >/dev/null 2>&1"
+    #         if it does not exist, print a failure message, increment FAILED, and return.
+
+    # TODO 2: read the actual template label
+    #         (path: .metadata.labels.template) and compare it to $expected_template.
+    #         Print PASS/FAIL and increment PASSED or FAILED accordingly.
+
+    # TODO 3: read the VM status (.status.printableStatus) and check it equals "Running".
+    #         Print PASS/FAIL and increment PASSED or FAILED accordingly.
+
+    # TODO 4: if status is Running, also confirm a matching VMI exists
+    #         ("oc get vmi $vm_name -n $NAMESPACE"). Print PASS/FAIL and update counters.
+
+    echo
+}
+
+echo "=== Template Deployment Validation ==="
+echo
+
+validate_vm "basic-vm-01" "basic-vm"
+validate_vm "basic-vm-02" "basic-vm"
+validate_vm "basic-vm-03" "basic-vm"
+validate_vm "advanced-vm-01" "advanced-vm"
+validate_vm "postgres-vm-01" "database-vm"
+
+echo "Validating Persistent Volume Claims:"
+# TODO 5: for each PVC in (advanced-vm-01-disk, postgres-vm-01-db-disk, postgres-vm-01-log-disk),
+#         check it exists and that .status.phase equals "Bound". Update PASSED/FAILED.
+
+echo
+echo "=== Validation Summary ==="
+echo "Passed: $PASSED"
+echo "Failed: $FAILED"
+
+if [ "$FAILED" -eq 0 ]; then
+    echo "All validations passed."
+    exit 0
+else
+    echo "Some validations failed. Review the output above."
+    exit 1
+fi
+EOF
+
+chmod +x validate-template-deployment.sh
+Reference solution:
+
+cat << 'EOF' > validate-template-deployment.sh.solution
+#!/bin/bash
+set -uo pipefail
+
+NAMESPACE="vm-templates"
+PASSED=0
+FAILED=0
+
+validate_vm() {
+    local vm_name=$1
+    local expected_template=$2
+
+    echo "Validating VM: $vm_name"
+
+    if ! oc get vm $vm_name -n $NAMESPACE >/dev/null 2>&1; then
+        echo "  FAIL: VM does not exist"
+        FAILED=$((FAILED+1))
+        return
+    fi
+
+    local actual_template
+    actual_template=$(oc get vm $vm_name -n $NAMESPACE -o jsonpath='{.metadata.labels.template}')
+    if [ "$actual_template" = "$expected_template" ]; then
+        echo "  PASS: Template label correct: $actual_template"
+        PASSED=$((PASSED+1))
+    else
+        echo "  FAIL: Template label incorrect. Expected: $expected_template, Got: $actual_template"
+        FAILED=$((FAILED+1))
+    fi
+
+    local status
+    status=$(oc get vm $vm_name -n $NAMESPACE -o jsonpath='{.status.printableStatus}')
+    if [ "$status" = "Running" ]; then
+        echo "  PASS: VM is running"
+        PASSED=$((PASSED+1))
+    else
+        echo "  FAIL: VM is not running. Status: $status"
+        FAILED=$((FAILED+1))
+    fi
+
+    if [ "$status" = "Running" ]; then
+        if oc get vmi $vm_name -n $NAMESPACE >/dev/null 2>&1; then
+            echo "  PASS: VMI exists"
+            PASSED=$((PASSED+1))
+        else
+            echo "  FAIL: VMI does not exist"
+            FAILED=$((FAILED+1))
+        fi
+    fi
+
+    echo
+}
+
+echo "=== Template Deployment Validation ==="
+echo
+
+validate_vm "basic-vm-01" "basic-vm"
+validate_vm "basic-vm-02" "basic-vm"
+validate_vm "basic-vm-03" "basic-vm"
+validate_vm "advanced-vm-01" "advanced-vm"
+validate_vm "postgres-vm-01" "database-vm"
+
+echo "Validating Persistent Volume Claims:"
+for pvc in advanced-vm-01-disk postgres-vm-01-db-disk postgres-vm-01-log-disk; do
+    if oc get pvc $pvc -n $NAMESPACE >/dev/null 2>&1; then
+        status=$(oc get pvc $pvc -n $NAMESPACE -o jsonpath='{.status.phase}')
+        if [ "$status" = "Bound" ]; then
+            echo "  PASS: PVC $pvc is bound"
+            PASSED=$((PASSED+1))
+        else
+            echo "  FAIL: PVC $pvc is not bound. Status: $status"
+            FAILED=$((FAILED+1))
+        fi
+    else
+        echo "  FAIL: PVC $pvc does not exist"
+        FAILED=$((FAILED+1))
+    fi
+done
+
+echo
+echo "=== Validation Summary ==="
+echo "Passed: $PASSED"
+echo "Failed: $FAILED"
+
+if [ "$FAILED" -eq 0 ]; then
+    echo "All validations passed."
+    exit 0
+else
+    echo "Some validations failed. Review the output above."
+    exit 1
+fi
+EOF
+Run your completed script:
+
+chmod +x validate-template-deployment.sh
+./validate-template-deployment.sh
+Deliverable: The script prints Passed: 18 and Failed: 0 (5 VMs x up to 3 checks each, plus 3 PVC checks = 18 total passing checks once all VMs are running and all PVCs bound), and exits with code 0. If any count differs, use the troubleshooting section below to diagnose which VM or PVC failed and why.
+
+Troubleshooting Common Issues
+Issue 1: VM Fails to Start
+# Check VM events
+oc describe vm <vm-name> -n vm-templates
+
+# Check VMI events if it exists
+oc describe vmi <vm-name> -n vm-templates
+
+# Check pod logs
+oc logs -l kubevirt.io/domain=<vm-name> -n vm-templates
+Issue 2: Template Processing Fails
+# Validate template syntax
+oc process <template-name> --dry-run -n vm-templates
+
+# Check template parameters
+oc describe template <template-name> -n vm-templates
+Issue 3: Storage Issues
+# Check PVC status
+oc get pvc -n vm-templates
+
+# Check storage class
+oc get storageclass
+
+# Check PV availability
+oc get pv
+Issue 4: Network Connectivity Problems
+# Check VM network configuration
+oc get vmi <vm-name> -n vm-templates -o yaml | grep -A 10 networks
+
+# Check network policies
+oc get networkpolicies -n vm-templates
+
+# Test internal connectivity from a debug pod
+oc run debug-pod --image=busybox --rm -it --restart=Never -n vm-templates -- /bin/sh
+Expected Outcomes
+Three parameterized VM templates (basic, advanced, and database) exist in the vm-templates namespace and can each be processed with oc process to generate valid VM manifests.
+Five virtual machines deployed from these templates reach and maintain Running status, with all associated PVCs in Bound state.
+Student-authored consistency, monitoring, and validation scripts successfully report accurate configuration data and produce a validation summary of Passed: 18, Failed: 0.
+Conclusion
+In this comprehensive lab, you built three parameterized OpenShift Virtualization templates covering basic, storage-backed, and database workloads, then used them to deploy and start five virtual machines with consistent, repeatable configurations. You practiced authoring your own bash-based verification tooling by completing scaffolded scripts that queried VM specs, node placement, and resource usage through oc and JSONPath, and you built a full pass/fail validation harness to confirm that every deployed VM and PVC matched its expected template and state. Along the way you learned how OpenShift template parameters drive consistent VM sizing and storage allocation, how to inspect VirtualMachine and VirtualMachineInstance objects for troubleshooting, and how to diagnose common failures in scheduling, storage binding, and networking. As a next step, consider extending these templates with live migration policies, integrating them with GitOps pipelines for automated template versioning, or adding automated performance regression checks to the validation script you wrote in Task 3.

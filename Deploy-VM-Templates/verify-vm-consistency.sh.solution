@@ -1,0 +1,28 @@
+#!/bin/bash
+set -euo pipefail
+
+NAMESPACE="vm-templates"
+
+get_vm_specs() {
+    local vm_name=$1
+    echo "VM: $vm_name"
+    echo "  CPU Cores: $(oc get vm $vm_name -n $NAMESPACE -o jsonpath='{.spec.template.spec.domain.cpu.cores}')"
+    echo "  Memory: $(oc get vm $vm_name -n $NAMESPACE -o jsonpath='{.spec.template.spec.domain.memory.guest}')"
+    echo "  Template: $(oc get vm $vm_name -n $NAMESPACE -o jsonpath='{.metadata.labels.template}')"
+    echo "  Status: $(oc get vm $vm_name -n $NAMESPACE -o jsonpath='{.status.printableStatus}')"
+    echo
+}
+
+echo "=== VM Configuration Consistency Check ==="
+echo
+
+echo "Basic Template VMs:"
+get_vm_specs "basic-vm-01"
+get_vm_specs "basic-vm-02"
+get_vm_specs "basic-vm-03"
+
+echo "Advanced Template VMs:"
+get_vm_specs "advanced-vm-01"
+
+echo "Database Template VMs:"
+get_vm_specs "postgres-vm-01"

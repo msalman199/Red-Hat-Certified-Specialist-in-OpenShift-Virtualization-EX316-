@@ -1,0 +1,150 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: database-vm-template
+  namespace: vm-templates
+  labels:
+    template: database-vm
+    workload.template.kubevirt.io/server: "true"
+  annotations:
+    name.os.template.kubevirt.io/rhel8: Red Hat Enterprise Linux 8
+    description: "Database VM template with separate data and log storage"
+objects:
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: ${VM_NAME}-db-disk
+    namespace: ${NAMESPACE}
+  spec:
+    accessModes:
+    - ReadWriteOnce
+    resources:
+      requests:
+        storage: ${DB_STORAGE_SIZE}
+    storageClassName: ${STORAGE_CLASS}
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: ${VM_NAME}-log-disk
+    namespace: ${NAMESPACE}
+  spec:
+    accessModes:
+    - ReadWriteOnce
+    resources:
+      requests:
+        storage: ${LOG_STORAGE_SIZE}
+    storageClassName: ${STORAGE_CLASS}
+- apiVersion: kubevirt.io/v1
+  kind: VirtualMachine
+  metadata:
+    name: ${VM_NAME}
+    namespace: ${NAMESPACE}
+    labels:
+      app: ${VM_NAME}
+      template: database-vm
+      workload: database
+  spec:
+    running: false
+    template:
+      metadata:
+        labels:
+          kubevirt.io/domain: ${VM_NAME}
+      spec:
+        domain:
+          cpu:
+            cores: ${{CPU_CORES}}
+            threads: ${{CPU_THREADS}}
+          memory:
+            guest: ${MEMORY}
+          devices:
+            disks:
+            - name: rootdisk
+              disk:
+                bus: virtio
+            - name: dbdisk
+              disk:
+                bus: virtio
+            - name: logdisk
+              disk:
+                bus: virtio
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+            interfaces:
+            - name: default
+              masquerade: {}
+            networkInterfaceMultiqueue: true
+            rng: {}
+        networks:
+        - name: default
+          pod: {}
+        volumes:
+        - name: rootdisk
+          containerDisk:
+            image: ${DISK_IMAGE}
+        - name: dbdisk
+          persistentVolumeClaim:
+            claimName: ${VM_NAME}-db-disk
+        - name: logdisk
+          persistentVolumeClaim:
+            claimName: ${VM_NAME}-log-disk
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            userData: |
+              #cloud-config
+              user: ${VM_USER}
+              password: ${VM_PASSWORD}
+              chpasswd: { expire: False }
+              ssh_authorized_keys:
+                - ${SSH_PUBLIC_KEY}
+              packages:
+                - postgresql-server
+                - postgresql-contrib
+                - htop
+                - iotop
+              runcmd:
+                - systemctl enable sshd
+                - systemctl start sshd
+                - mkdir -p /var/lib/pgsql/data
+                - mkdir -p /var/log/postgresql
+                - mount /dev/vdb /var/lib/pgsql/data
+                - mount /dev/vdc /var/log/postgresql
+                - chown -R postgres:postgres /var/lib/pgsql/data
+                - chown -R postgres:postgres /var/log/postgresql
+parameters:
+- name: VM_NAME
+  description: Name of the Database VM
+  required: true
+- name: NAMESPACE
+  description: Namespace for the VM
+  value: vm-templates
+- name: CPU_CORES
+  description: Number of CPU cores
+  value: "8"
+- name: CPU_THREADS
+  description: Number of CPU threads per core
+  value: "2"
+- name: MEMORY
+  description: Memory allocation
+  value: 16Gi
+- name: DB_STORAGE_SIZE
+  description: Database storage size
+  value: 100Gi
+- name: LOG_STORAGE_SIZE
+  description: Log storage size
+  value: 20Gi
+- name: STORAGE_CLASS
+  description: Storage class for persistent volumes
+  value: standard
+- name: DISK_IMAGE
+  description: Container disk image
+  value: quay.io/kubevirt/fedora-cloud-container-disk-demo
+- name: VM_USER
+  description: VM username
+  value: fedora
+- name: VM_PASSWORD
+  description: VM password
+  value: fedora123
+- name: SSH_PUBLIC_KEY
+  description: SSH public key for access
+  value: ""
