@@ -1,0 +1,11 @@
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: vm-restore-20261127-030020
+  namespace: openshift-adp
+spec:
+  backupName: 
+  includedNamespaces:
+  - default
+  restorePVs: true
+  includeClusterResources: true

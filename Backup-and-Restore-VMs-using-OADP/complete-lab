@@ -1,0 +1,476 @@
+Lab Material
+Lab 9: Backup and Restore VMs using OADP
+Objectives
+By the end of this lab, you will be able to:
+
+Install and configure the OpenShift APIs for Data Protection (OADP) operator
+Deploy and configure Velero for VM backup operations
+Create backup policies for OpenShift Virtualization workloads
+Perform backup operations for virtual machines and their associated data
+Execute restore operations to recover VMs from backup storage
+Validate backup and restore functionality in an OpenShift environment
+Implement best practices for VM data protection using open-source tools
+Prerequisites
+Before starting this lab, ensure you have:
+
+Basic understanding of OpenShift Container Platform concepts
+Familiarity with OpenShift Virtualization and virtual machine management
+Knowledge of Kubernetes resources (pods, services, persistent volumes)
+Experience with command-line interface (CLI) operations
+Understanding of backup and restore concepts
+Access to an OpenShift cluster with cluster-admin privileges
+Basic knowledge of YAML configuration files
+Lab Environment Setup
+Ready-to-Use Cloud Machines: Al Nafi provides pre-configured Linux-based cloud machines with OpenShift cluster access. Simply click Start Lab to begin - no need to build your own virtual machines or configure the environment from scratch.
+
+Your lab environment includes:
+
+OpenShift Container Platform 4.12 or later
+OpenShift Virtualization operator pre-installed
+Sufficient storage for backup operations
+Network connectivity to external storage providers
+Task 1: Deploy the Velero Operator
+Subtask 1.1: Install the OADP Operator
+First, we'll install the OpenShift APIs for Data Protection operator, which includes Velero.
+
+Access the OpenShift Web Console
+Log into your OpenShift cluster using the provided credentials:
+
+oc login --server=https://api.your-cluster.com:6443 --username=admin --password=your-password
+Create the OADP Namespace
+Create a dedicated namespace for OADP operations:
+
+oc create namespace openshift-adp
+Install the OADP Operator
+Create the operator subscription file:
+
+cat << EOF > oadp-operator-subscription.yaml
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: redhat-oadp-operator
+  namespace: openshift-adp
+spec:
+  channel: stable-1.2
+  name: redhat-oadp-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic
+EOF
+Apply the subscription:
+
+oc apply -f oadp-operator-subscription.yaml
+Verify Operator Installation
+Check if the operator is successfully installed:
+
+oc get csv -n openshift-adp
+Wait for the operator status to show Succeeded.
+
+Subtask 1.2: Configure Storage Backend
+For this lab, we'll configure AWS S3 as our backup storage backend.
+
+Create AWS Credentials Secret
+Create a credentials file for AWS access:
+
+cat << EOF > credentials-velero
+[default]
+aws_access_key_id = YOUR_ACCESS_KEY_ID
+aws_secret_access_key = YOUR_SECRET_ACCESS_KEY
+EOF
+Create the secret in OpenShift:
+
+oc create secret generic cloud-credentials \
+  --namespace openshift-adp \
+  --from-file cloud=credentials-velero
+Create S3 Bucket Configuration
+Create the DataProtectionApplication resource:
+
+cat << EOF > dpa-config.yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: DataProtectionApplication
+metadata:
+  name: velero-sample
+  namespace: openshift-adp
+spec:
+  configuration:
+    velero:
+      defaultPlugins:
+        - openshift
+        - aws
+        - kubevirt
+      resourceTimeout: 10m
+    restic:
+      enable: true
+      podConfig:
+        resourceAllocations:
+          limits:
+            cpu: "1"
+            memory: 1Gi
+          requests:
+            cpu: 500m
+            memory: 512Mi
+  backupLocations:
+    - velero:
+        config:
+          region: us-east-1
+          s3ForcePathStyle: "false"
+          s3Url: https://s3.amazonaws.com
+        credential:
+          key: cloud
+          name: cloud-credentials
+        default: true
+        objectStorage:
+          bucket: your-backup-bucket-name
+          prefix: velero
+        provider: aws
+  snapshotLocations:
+    - velero:
+        config:
+          region: us-east-1
+        provider: aws
+EOF
+Apply the configuration:
+
+oc apply -f dpa-config.yaml
+Verify Velero Deployment
+Check if Velero pods are running:
+
+oc get pods -n openshift-adp
+Verify the backup location:
+
+oc get backupstoragelocation -n openshift-adp
+Task 2: Backup VM Data to Cloud Provider
+Subtask 2.1: Prepare Test Virtual Machine
+Before creating backups, let's ensure we have a VM to work with.
+
+Create a Test Virtual Machine
+Create a simple VM for backup testing:
+
+cat << EOF > test-vm.yaml
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: test-vm-backup
+  namespace: default
+  labels:
+    app: test-vm
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: test-vm-backup
+    spec:
+      domain:
+        cpu:
+          cores: 1
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: containerdisk
+          - disk:
+              bus: virtio
+            name: cloudinitdisk
+          interfaces:
+          - masquerade: {}
+            name: default
+        machine:
+          type: pc-q35-rhel8.4.0
+        resources:
+          requests:
+            memory: 1Gi
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+      - containerDisk:
+          image: quay.io/kubevirt/cirros-container-disk-demo
+        name: containerdisk
+      - cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            password: fedora
+            chpasswd: { expire: False }
+        name: cloudinitdisk
+EOF
+Apply the VM configuration:
+
+oc apply -f test-vm.yaml
+Verify VM is Running
+Check the VM status:
+
+oc get vm test-vm-backup
+oc get vmi test-vm-backup
+Subtask 2.2: Create VM Backup Policy
+Now we'll create a backup policy specifically for virtual machines.
+
+Create Backup Schedule
+Create a scheduled backup for VMs:
+
+cat << EOF > vm-backup-schedule.yaml
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: vm-daily-backup
+  namespace: openshift-adp
+spec:
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  template:
+    includedNamespaces:
+    - default
+    labelSelector:
+      matchLabels:
+        app: test-vm
+    storageLocation: velero-sample-1
+    ttl: 720h0m0s  # 30 days retention
+    hooks:
+      resources:
+      - name: vm-backup-hook
+        includedNamespaces:
+        - default
+        labelSelector:
+          matchLabels:
+            app: test-vm
+        pre:
+        - exec:
+            command:
+            - /bin/bash
+            - -c
+            - echo "Preparing VM for backup"
+        post:
+        - exec:
+            command:
+            - /bin/bash
+            - -c
+            - echo "VM backup completed"
+EOF
+Apply the schedule:
+
+oc apply -f vm-backup-schedule.yaml
+Subtask 2.3: Execute Manual Backup
+Let's create an immediate backup for testing purposes.
+
+Create Manual Backup
+Create a one-time backup:
+
+cat << EOF > vm-manual-backup.yaml
+apiVersion: velero.io/v1
+kind: Backup
+metadata:
+  name: vm-backup-$(date +%Y%m%d-%H%M%S)
+  namespace: openshift-adp
+spec:
+  includedNamespaces:
+  - default
+  labelSelector:
+    matchLabels:
+      app: test-vm
+  storageLocation: velero-sample-1
+  ttl: 720h0m0s
+  includeClusterResources: true
+  snapshotVolumes: true
+EOF
+Apply the backup:
+
+oc apply -f vm-manual-backup.yaml
+Monitor Backup Progress
+Check backup status:
+
+oc get backup -n openshift-adp
+Get detailed backup information:
+
+BACKUP_NAME=$(oc get backup -n openshift-adp --no-headers | head -1 | awk '{print $1}')
+oc describe backup $BACKUP_NAME -n openshift-adp
+Verify Backup Completion
+Check if backup completed successfully:
+
+oc get backup $BACKUP_NAME -n openshift-adp -o jsonpath='{.status.phase}'
+The status should show Completed.
+
+Task 3: Restore VM from Backup
+Subtask 3.1: Simulate Data Loss
+To demonstrate the restore process, we'll simulate data loss by deleting our test VM.
+
+Stop and Delete the Test VM
+First, stop the VM:
+
+oc patch vm test-vm-backup --type merge -p '{"spec":{"running":false}}'
+Wait for the VM to stop, then delete it:
+
+oc delete vm test-vm-backup
+Verify VM Deletion
+Confirm the VM is completely removed:
+
+oc get vm test-vm-backup
+You should see a "not found" error, confirming deletion.
+
+Subtask 3.2: Perform VM Restore
+Now we'll restore the VM from our backup.
+
+Create Restore Configuration
+Create a restore resource:
+
+cat << EOF > vm-restore.yaml
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: vm-restore-$(date +%Y%m%d-%H%M%S)
+  namespace: openshift-adp
+spec:
+  backupName: $BACKUP_NAME
+  includedNamespaces:
+  - default
+  restorePVs: true
+  includeClusterResources: true
+EOF
+Apply the restore:
+
+oc apply -f vm-restore.yaml
+Monitor Restore Progress
+Check restore status:
+
+oc get restore -n openshift-adp
+Get detailed restore information:
+
+RESTORE_NAME=$(oc get restore -n openshift-adp --no-headers | head -1 | awk '{print $1}')
+oc describe restore $RESTORE_NAME -n openshift-adp
+Subtask 3.3: Validate Restore Success
+Verify that the VM has been successfully restored.
+
+Check VM Status
+Verify the VM exists and is running:
+
+oc get vm test-vm-backup
+oc get vmi test-vm-backup
+Validate VM Functionality
+Check VM details to ensure it matches the original:
+
+oc describe vm test-vm-backup
+Test VM Connectivity
+If the VM has network access, test connectivity:
+
+oc get vmi test-vm-backup -o jsonpath='{.status.interfaces[0].ipAddress}'
+Advanced Configuration and Best Practices
+Subtask 4.1: Configure Backup Retention Policies
+Implement proper retention policies for your backups.
+
+Create Retention Policy
+cat << EOF > backup-retention-policy.yaml
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: vm-backup-with-retention
+  namespace: openshift-adp
+spec:
+  schedule: "0 1 * * 0"  # Weekly on Sunday at 1 AM
+  template:
+    includedNamespaces:
+    - default
+    labelSelector:
+      matchLabels:
+        backup-policy: weekly
+    storageLocation: velero-sample-1
+    ttl: 2160h0m0s  # 90 days retention
+    includeClusterResources: true
+    snapshotVolumes: true
+EOF
+Apply the policy:
+
+oc apply -f backup-retention-policy.yaml
+Subtask 4.2: Monitor Backup Operations
+Set up monitoring for backup operations.
+
+Check Backup Statistics
+Create a script to monitor backup health:
+
+cat << 'EOF' > backup-monitor.sh
+#!/bin/bash
+
+echo "=== OADP Backup Status Report ==="
+echo "Date: $(date)"
+echo
+
+echo "=== Recent Backups ==="
+oc get backup -n openshift-adp --sort-by=.metadata.creationTimestamp
+
+echo
+echo "=== Backup Storage Locations ==="
+oc get backupstoragelocation -n openshift-adp
+
+echo
+echo "=== Failed Backups (if any) ==="
+oc get backup -n openshift-adp -o json | jq -r '.items[] | select(.status.phase == "Failed") | .metadata.name'
+
+echo
+echo "=== Storage Usage ==="
+oc get pvc -n openshift-adp
+EOF
+
+chmod +x backup-monitor.sh
+./backup-monitor.sh
+Troubleshooting Common Issues
+Issue 1: Backup Fails with Storage Errors
+Problem: Backup fails due to storage connectivity issues.
+
+Solution:
+
+Verify storage credentials:
+oc get secret cloud-credentials -n openshift-adp -o yaml
+Check storage location status:
+oc get backupstoragelocation -n openshift-adp -o yaml
+Test connectivity to storage backend:
+oc logs deployment/velero -n openshift-adp
+Issue 2: VM Restore Incomplete
+Problem: VM restores but doesn't function properly.
+
+Solution:
+
+Check restore logs:
+oc describe restore $RESTORE_NAME -n openshift-adp
+Verify all resources were restored:
+oc get all -l app=test-vm
+Check persistent volume claims:
+oc get pvc
+Issue 3: Performance Issues During Backup
+Problem: Backup operations are slow or timing out.
+
+Solution:
+
+Increase resource limits for Restic:
+oc patch dpa velero-sample -n openshift-adp --type merge -p '{"spec":{"configuration":{"restic":{"podConfig":{"resourceAllocations":{"limits":{"cpu":"2","memory":"2Gi"}}}}}}}'
+Adjust backup timeout:
+oc patch dpa velero-sample -n openshift-adp --type merge -p '{"spec":{"configuration":{"velero":{"resourceTimeout":"20m"}}}}'
+Cleanup and Resource Management
+Cleanup Procedure
+When you're finished with the lab, clean up resources:
+
+Delete Test Resources
+oc delete vm test-vm-backup
+oc delete backup --all -n openshift-adp
+oc delete restore --all -n openshift-adp
+oc delete schedule --all -n openshift-adp
+Remove OADP Configuration
+oc delete dpa velero-sample -n openshift-adp
+oc delete subscription redhat-oadp-operator -n openshift-adp
+Clean Up Namespace
+oc delete namespace openshift-adp
+Conclusion
+In this comprehensive lab, you have successfully:
+
+Deployed the OADP operator and configured Velero for VM backup operations in an OpenShift environment
+Implemented backup strategies for OpenShift Virtualization workloads using cloud storage backends
+Executed both scheduled and manual backups of virtual machines and their associated data
+Performed complete restore operations to recover VMs from backup storage
+Validated backup and restore functionality ensuring data integrity and system recovery capabilities
+Implemented best practices for retention policies and monitoring backup operations
+Why This Matters: In production environments, data protection is critical for business continuity. OpenShift APIs for Data Protection (OADP) provides enterprise-grade backup and restore capabilities for containerized workloads, including virtual machines. The skills you've learned enable you to:
+
+Protect critical VM workloads against data loss
+Implement automated backup strategies that scale with your infrastructure
+Ensure rapid recovery capabilities for disaster recovery scenarios
+Meet compliance requirements for data retention and protection
+Reduce downtime and business impact during system failures
+These capabilities are essential for maintaining robust, production-ready OpenShift Virtualization environments and are key competencies for the Red Hat Certified Specialist in OpenShift Virtualization certification.
+
+The combination of OpenShift Virtualization and OADP provides a complete solution for running and protecting virtual workloads in modern container platforms, making your infrastructure more resilient and your operations more efficient.
