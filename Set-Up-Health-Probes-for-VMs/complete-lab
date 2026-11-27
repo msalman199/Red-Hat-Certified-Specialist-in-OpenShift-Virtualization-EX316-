@@ -1,0 +1,700 @@
+Lab 14: Set Up Health Probes for VMs
+Objectives
+By the end of this lab, you will be able to:
+
+Configure readiness and liveness probes for virtual machines in OpenShift Virtualization
+Understand the difference between readiness and liveness probes and their use cases
+Test VM responsiveness using health probes
+Monitor VM health status through the OpenShift console and CLI
+Troubleshoot VM health issues using probe configurations
+Implement automated VM restart policies based on health probe failures
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of OpenShift concepts (pods, deployments, services)
+Familiarity with YAML configuration files
+Knowledge of Linux command line operations
+Understanding of virtual machine concepts
+Access to an OpenShift cluster with OpenShift Virtualization operator installed
+Basic networking knowledge (TCP/UDP, HTTP protocols)
+Ready-to-Use Cloud Machines
+Al Nafi provides pre-configured Linux-based cloud machines with OpenShift Virtualization already set up. Simply click Start Lab to access your environment. No need to build your own VM or install additional software - everything is ready to use.
+
+Your lab environment includes:
+
+OpenShift cluster with Virtualization operator
+Pre-configured storage classes
+Network configurations
+Sample VM templates
+CLI tools (oc, virtctl)
+Lab Environment Overview
+Health probes in OpenShift Virtualization work similarly to Kubernetes pod probes but are specifically designed for virtual machines. They help ensure VMs are running correctly and can automatically restart unhealthy VMs.
+
+Key Concepts:
+
+Readiness Probe: Determines if a VM is ready to receive traffic
+Liveness Probe: Determines if a VM is running properly and should be restarted if unhealthy
+Probe Types: TCP, HTTP, and guest agent probes
+Task 1: Set Up Readiness and Liveness Probes for VMs
+Subtask 1.1: Create a Base Virtual Machine
+First, let's create a virtual machine that we'll configure with health probes.
+
+Access your OpenShift environment
+# Verify you're logged into OpenShift
+oc whoami
+
+# Create a new project for this lab
+oc new-project vm-health-probes
+
+# Verify the project was created
+oc project vm-health-probes
+Create a virtual machine with a web server
+Create a file called vm-with-webserver.yaml:
+
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: webserver-vm
+  namespace: vm-health-probes
+  labels:
+    app: webserver
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: webserver-vm
+    spec:
+      domain:
+        devices:
+          disks:
+          - name: containerdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: default
+            masquerade: {}
+        resources:
+          requests:
+            memory: 1Gi
+            cpu: 1
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+      - name: containerdisk
+        containerDisk:
+          image: quay.io/kubevirt/fedora-with-test-tooling-container-disk:latest
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            password: fedora
+            chpasswd: { expire: False }
+            packages:
+              - nginx
+            runcmd:
+              - systemctl enable nginx
+              - systemctl start nginx
+              - echo "<h1>Health Probe Test Server</h1><p>VM is healthy!</p>" > /var/www/html/index.html
+              - echo "<h1>Health Check</h1><p>Status: OK</p>" > /var/www/html/health
+Apply the VM configuration
+# Create the virtual machine
+oc apply -f vm-with-webserver.yaml
+
+# Wait for the VM to start
+oc get vm webserver-vm -w
+
+# Check the VM instance status
+oc get vmi webserver-vm
+Subtask 1.2: Configure HTTP Readiness Probe
+Now let's add a readiness probe that checks if the web server is responding.
+
+Create VM with HTTP readiness probe
+Create a file called vm-with-readiness-probe.yaml:
+
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: webserver-vm-probes
+  namespace: vm-health-probes
+  labels:
+    app: webserver-probes
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: webserver-vm-probes
+    spec:
+      domain:
+        devices:
+          disks:
+          - name: containerdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: default
+            masquerade: {}
+        resources:
+          requests:
+            memory: 1Gi
+            cpu: 1
+      readinessProbe:
+        httpGet:
+          path: /health
+          port: 80
+          scheme: HTTP
+        initialDelaySeconds: 60
+        periodSeconds: 10
+        timeoutSeconds: 5
+        successThreshold: 1
+        failureThreshold: 3
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+      - name: containerdisk
+        containerDisk:
+          image: quay.io/kubevirt/fedora-with-test-tooling-container-disk:latest
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            password: fedora
+            chpasswd: { expire: False }
+            packages:
+              - nginx
+            runcmd:
+              - systemctl enable nginx
+              - systemctl start nginx
+              - echo "<h1>Health Probe Test Server</h1><p>VM is healthy!</p>" > /var/www/html/index.html
+              - echo "<h1>Health Check</h1><p>Status: OK</p>" > /var/www/html/health
+Apply the configuration
+# Delete the previous VM if it exists
+oc delete vm webserver-vm --ignore-not-found=true
+
+# Create the new VM with readiness probe
+oc apply -f vm-with-readiness-probe.yaml
+
+# Monitor the VM startup
+oc get vmi webserver-vm-probes -w
+Subtask 1.3: Add Liveness Probe
+Now let's add a liveness probe to automatically restart the VM if it becomes unhealthy.
+
+Create VM with both readiness and liveness probes
+Create a file called vm-with-both-probes.yaml:
+
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: webserver-vm-full-probes
+  namespace: vm-health-probes
+  labels:
+    app: webserver-full-probes
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: webserver-vm-full-probes
+    spec:
+      domain:
+        devices:
+          disks:
+          - name: containerdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: default
+            masquerade: {}
+        resources:
+          requests:
+            memory: 1Gi
+            cpu: 1
+      readinessProbe:
+        httpGet:
+          path: /health
+          port: 80
+          scheme: HTTP
+        initialDelaySeconds: 60
+        periodSeconds: 10
+        timeoutSeconds: 5
+        successThreshold: 1
+        failureThreshold: 3
+      livenessProbe:
+        httpGet:
+          path: /
+          port: 80
+          scheme: HTTP
+        initialDelaySeconds: 120
+        periodSeconds: 30
+        timeoutSeconds: 10
+        successThreshold: 1
+        failureThreshold: 3
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+      - name: containerdisk
+        containerDisk:
+          image: quay.io/kubevirt/fedora-with-test-tooling-container-disk:latest
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            password: fedora
+            chpasswd: { expire: False }
+            packages:
+              - nginx
+            runcmd:
+              - systemctl enable nginx
+              - systemctl start nginx
+              - echo "<h1>Health Probe Test Server</h1><p>VM is healthy!</p>" > /var/www/html/index.html
+              - echo "<h1>Health Check</h1><p>Status: OK</p>" > /var/www/html/health
+Apply the full probe configuration
+# Delete the previous VM
+oc delete vm webserver-vm-probes --ignore-not-found=true
+
+# Create the VM with both probes
+oc apply -f vm-with-both-probes.yaml
+
+# Wait for the VM to be ready
+oc get vmi webserver-vm-full-probes -w
+Subtask 1.4: Configure TCP Probe Alternative
+Let's also create an example with TCP probes for scenarios where HTTP isn't available.
+
+Create VM with TCP probes
+Create a file called vm-with-tcp-probes.yaml:
+
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: tcp-probe-vm
+  namespace: vm-health-probes
+  labels:
+    app: tcp-probe-vm
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: tcp-probe-vm
+    spec:
+      domain:
+        devices:
+          disks:
+          - name: containerdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: default
+            masquerade: {}
+        resources:
+          requests:
+            memory: 1Gi
+            cpu: 1
+      readinessProbe:
+        tcpSocket:
+          port: 22
+        initialDelaySeconds: 30
+        periodSeconds: 10
+        timeoutSeconds: 3
+        successThreshold: 1
+        failureThreshold: 3
+      livenessProbe:
+        tcpSocket:
+          port: 22
+        initialDelaySeconds: 60
+        periodSeconds: 20
+        timeoutSeconds: 3
+        successThreshold: 1
+        failureThreshold: 3
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+      - name: containerdisk
+        containerDisk:
+          image: quay.io/kubevirt/fedora-with-test-tooling-container-disk:latest
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            password: fedora
+            chpasswd: { expire: False }
+            ssh_pwauth: True
+            runcmd:
+              - systemctl enable sshd
+              - systemctl start sshd
+Apply the TCP probe configuration
+# Create the TCP probe VM
+oc apply -f vm-with-tcp-probes.yaml
+
+# Monitor the VM
+oc get vmi tcp-probe-vm -w
+Task 2: Test VM Responsiveness Using Probes
+Subtask 2.1: Verify Probe Functionality
+Let's test that our probes are working correctly by checking the VM status and probe results.
+
+Check VM and probe status
+# Get detailed information about the VM with HTTP probes
+oc describe vmi webserver-vm-full-probes
+
+# Check the events to see probe activity
+oc get events --sort-by='.lastTimestamp' | grep webserver-vm-full-probes
+
+# Get the VM's IP address
+VM_IP=$(oc get vmi webserver-vm-full-probes -o jsonpath='{.status.interfaces[0].ipAddress}')
+echo "VM IP: $VM_IP"
+Test the health endpoints manually
+# Create a test pod to access the VM
+oc run test-pod --image=curlimages/curl --rm -it --restart=Never -- sh
+
+# Inside the test pod, test the health endpoints
+curl http://$VM_IP/health
+curl http://$VM_IP/
+
+# Exit the test pod
+exit
+Subtask 2.2: Simulate Probe Failures
+Now let's simulate failures to see how the probes respond.
+
+Access the VM to simulate service failure
+# Get the VM's pod name
+POD_NAME=$(oc get vmi webserver-vm-full-probes -o jsonpath='{.metadata.name}')
+
+# Connect to the VM using virtctl
+virtctl console webserver-vm-full-probes
+Inside the VM console, simulate nginx failure
+# Login with fedora/fedora
+# Stop nginx to simulate service failure
+sudo systemctl stop nginx
+
+# Check nginx status
+sudo systemctl status nginx
+
+# Exit the console (Ctrl+] or Ctrl+A+Q)
+Monitor probe failures from OpenShift
+# Watch the VM status for probe failures
+oc get vmi webserver-vm-full-probes -w
+
+# Check events for probe failure messages
+oc get events --sort-by='.lastTimestamp' | grep -i probe
+
+# Describe the VMI to see probe status
+oc describe vmi webserver-vm-full-probes | grep -A 10 -B 5 Probe
+Subtask 2.3: Test Automatic Recovery
+Let's see how the liveness probe triggers VM restart when failures persist.
+
+Monitor VM restart behavior
+# Keep monitoring the VM status
+oc get vmi webserver-vm-full-probes -w
+
+# In another terminal, watch the events
+oc get events -w | grep webserver-vm-full-probes
+Restore service to test recovery
+# Connect back to the VM
+virtctl console webserver-vm-full-probes
+
+# Restart nginx service
+sudo systemctl start nginx
+sudo systemctl status nginx
+
+# Verify the health endpoint is working
+curl localhost/health
+
+# Exit console
+Verify probe recovery
+# Check that probes are now successful
+oc describe vmi webserver-vm-full-probes | grep -A 5 -B 5 Probe
+
+# Verify VM is ready
+oc get vmi webserver-vm-full-probes
+Task 3: Monitor VM Health Using OpenShift Console and CLI
+Subtask 3.1: Monitor Health via CLI
+Let's explore various CLI commands to monitor VM health status.
+
+Use oc commands to check VM health
+# Get comprehensive VM status
+oc get vmi --show-labels
+
+# Get detailed VM information including probe status
+oc describe vmi webserver-vm-full-probes
+
+# Check VM conditions
+oc get vmi webserver-vm-full-probes -o jsonpath='{.status.conditions}' | jq '.'
+
+# Monitor VM events in real-time
+oc get events -w --field-selector involvedObject.name=webserver-vm-full-probes
+Create a monitoring script
+Create a file called monitor-vm-health.sh:
+
+#!/bin/bash
+
+VM_NAME="webserver-vm-full-probes"
+NAMESPACE="vm-health-probes"
+
+echo "=== VM Health Monitor ==="
+echo "Monitoring VM: $VM_NAME in namespace: $NAMESPACE"
+echo "Press Ctrl+C to stop"
+echo
+
+while true; do
+    clear
+    echo "=== VM Status at $(date) ==="
+    
+    # Get VM basic status
+    echo "VM Status:"
+    oc get vmi $VM_NAME -o custom-columns=NAME:.metadata.name,PHASE:.status.phase,READY:.status.conditions[?(@.type==\"Ready\")].status,AGE:.metadata.creationTimestamp
+    
+    echo
+    echo "Probe Status:"
+    # Check readiness probe
+    READY_STATUS=$(oc get vmi $VM_NAME -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')
+    echo "Readiness Probe: $READY_STATUS"
+    
+    # Get recent events
+    echo
+    echo "Recent Events:"
+    oc get events --sort-by='.lastTimestamp' --field-selector involvedObject.name=$VM_NAME | tail -5
+    
+    sleep 10
+done
+Make the script executable and run it
+# Make the script executable
+chmod +x monitor-vm-health.sh
+
+# Run the monitoring script
+./monitor-vm-health.sh
+Subtask 3.2: Monitor Health via OpenShift Web Console
+Access the OpenShift Web Console
+# Get the console URL
+oc whoami --show-console
+
+# Get login token if needed
+oc whoami -t
+Navigate to VM health information
+Follow these steps in the web console:
+
+Navigate to Virtualization → VirtualMachines
+Select the vm-health-probes project
+Click on webserver-vm-full-probes
+Go to the Details tab to see probe configuration
+Check the Events tab for probe-related events
+Monitor the Metrics tab for health trends
+Subtask 3.3: Create Custom Health Monitoring
+Let's create a more sophisticated monitoring setup.
+
+Create a health check service
+Create a file called health-monitor-service.yaml:
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: vm-health-monitor
+  namespace: vm-health-probes
+spec:
+  selector:
+    app: webserver-full-probes
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: health-check-script
+  namespace: vm-health-probes
+data:
+  check-health.sh: |
+    #!/bin/bash
+    VM_SERVICE="vm-health-monitor"
+    NAMESPACE="vm-health-probes"
+    
+    while true; do
+        echo "$(date): Checking VM health..."
+        
+        if curl -s -f http://$VM_SERVICE.$NAMESPACE.svc.cluster.local/health > /dev/null; then
+            echo "$(date): VM is healthy"
+        else
+            echo "$(date): VM health check failed!"
+        fi
+        
+        sleep 30
+    done
+Create a monitoring pod
+Create a file called health-monitor-pod.yaml:
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: health-monitor
+  namespace: vm-health-probes
+spec:
+  containers:
+  - name: monitor
+    image: curlimages/curl:latest
+    command: ["/bin/sh"]
+    args: ["/scripts/check-health.sh"]
+    volumeMounts:
+    - name: script-volume
+      mountPath: /scripts
+  volumes:
+  - name: script-volume
+    configMap:
+      name: health-check-script
+      defaultMode: 0755
+  restartPolicy: Always
+Deploy the monitoring setup
+# Apply the monitoring configuration
+oc apply -f health-monitor-service.yaml
+oc apply -f health-monitor-pod.yaml
+
+# Check the monitoring pod logs
+oc logs -f health-monitor
+Subtask 3.4: Advanced Health Monitoring with Alerts
+Let's set up more advanced monitoring with custom metrics.
+
+Create a comprehensive health check
+Create a file called advanced-health-check.yaml:
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vm-health-checker
+  namespace: vm-health-probes
+spec:
+  schedule: "*/2 * * * *"  # Every 2 minutes
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: health-checker
+            image: curlimages/curl:latest
+            command:
+            - /bin/sh
+            - -c
+            - |
+              echo "=== VM Health Check Report $(date) ==="
+              
+              # Check HTTP endpoint
+              if curl -s -f http://vm-health-monitor.vm-health-probes.svc.cluster.local/health; then
+                echo "✓ HTTP Health Check: PASSED"
+              else
+                echo "✗ HTTP Health Check: FAILED"
+              fi
+              
+              # Check main page
+              if curl -s -f http://vm-health-monitor.vm-health-probes.svc.cluster.local/; then
+                echo "✓ Main Page Check: PASSED"
+              else
+                echo "✗ Main Page Check: FAILED"
+              fi
+              
+              echo "=== End Health Check ==="
+          restartPolicy: OnFailure
+Deploy the advanced health checker
+# Apply the CronJob
+oc apply -f advanced-health-check.yaml
+
+# Check CronJob status
+oc get cronjobs
+
+# View job execution logs
+oc get jobs
+oc logs job/$(oc get jobs -o name | grep vm-health-checker | head -1 | cut -d'/' -f2)
+Troubleshooting Common Issues
+Issue 1: Probes Failing to Start
+Symptoms: VM shows as not ready, probe failures in events
+
+Solutions:
+
+# Check VM startup logs
+oc describe vmi webserver-vm-full-probes
+
+# Verify cloud-init completed
+virtctl console webserver-vm-full-probes
+# Inside VM: sudo cloud-init status
+
+# Check if services are running
+# Inside VM: sudo systemctl status nginx
+Issue 2: Probe Timeouts
+Symptoms: Intermittent probe failures, timeout errors
+
+Solutions:
+
+# Increase timeout values in probe configuration
+# Edit the VM YAML and increase timeoutSeconds
+
+# Check VM resource constraints
+oc describe vmi webserver-vm-full-probes | grep -A 10 Resources
+
+# Monitor VM performance
+virtctl top vmi webserver-vm-full-probes
+Issue 3: Network Connectivity Issues
+Symptoms: TCP probes failing, network unreachable errors
+
+Solutions:
+
+# Check VM network configuration
+oc get vmi webserver-vm-full-probes -o yaml | grep -A 10 networks
+
+# Test network connectivity
+oc run network-test --image=nicolaka/netshoot --rm -it --restart=Never -- sh
+# Inside pod: ping $VM_IP
+
+# Check service endpoints
+oc get endpoints vm-health-monitor
+Lab Summary and Cleanup
+What You Accomplished
+In this lab, you successfully:
+
+Configured Health Probes: Set up both readiness and liveness probes for VMs using HTTP and TCP protocols
+Tested Probe Functionality: Simulated failures and verified automatic recovery mechanisms
+Monitored VM Health: Used both CLI and web console to monitor VM health status
+Implemented Advanced Monitoring: Created custom monitoring solutions with automated health checks
+Key Takeaways
+Readiness probes determine when a VM is ready to receive traffic
+Liveness probes automatically restart unhealthy VMs
+Probe configuration requires careful tuning of timeouts and thresholds
+Monitoring is essential for maintaining VM health in production environments
+Cleanup Resources
+# Delete all VMs created in this lab
+oc delete vm --all -n vm-health-probes
+
+# Delete the monitoring resources
+oc delete cronjob vm-health-checker -n vm-health-probes
+oc delete pod health-monitor -n vm-health-probes
+oc delete service vm-health-monitor -n vm-health-probes
+oc delete configmap health-check-script -n vm-health-probes
+
+# Delete the project
+oc delete project vm-health-probes
+
+# Verify cleanup
+oc get projects | grep vm-health-probes
+Next Steps
+To further enhance your OpenShift Virtualization skills:
+
+Explore guest agent probes for more detailed VM monitoring
+Integrate with Prometheus for advanced metrics collection
+Set up alerting based on VM health status
+Implement custom health endpoints in your applications
+Study high availability configurations for critical VMs
+This lab provided hands-on experience with VM health monitoring, a critical skill for managing production virtualized workloads in OpenShift environments.

@@ -1,0 +1,50 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: webserver-vm
+  namespace: vm-health-probes
+  labels:
+    app: webserver
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: webserver-vm
+    spec:
+      domain:
+        devices:
+          disks:
+          - name: containerdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: default
+            masquerade: {}
+        resources:
+          requests:
+            memory: 1Gi
+            cpu: 1
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+      - name: containerdisk
+        containerDisk:
+          image: quay.io/kubevirt/fedora-with-test-tooling-container-disk:latest
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            password: fedora
+            chpasswd: { expire: False }
+            packages:
+              - nginx
+            runcmd:
+              - systemctl enable nginx
+              - systemctl start nginx
+              - echo "<h1>Health Probe Test Server</h1><p>VM is healthy!</p>" > /var/www/html/index.html
+              - echo "<h1>Health Check</h1><p>Status: OK</p>" > /var/www/html/health

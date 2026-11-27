@@ -1,0 +1,63 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: tcp-probe-vm
+  namespace: vm-health-probes
+  labels:
+    app: tcp-probe-vm
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: tcp-probe-vm
+    spec:
+      domain:
+        devices:
+          disks:
+          - name: containerdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: default
+            masquerade: {}
+        resources:
+          requests:
+            memory: 1Gi
+            cpu: 1
+      readinessProbe:
+        tcpSocket:
+          port: 22
+        initialDelaySeconds: 30
+        periodSeconds: 10
+        timeoutSeconds: 3
+        successThreshold: 1
+        failureThreshold: 3
+      livenessProbe:
+        tcpSocket:
+          port: 22
+        initialDelaySeconds: 60
+        periodSeconds: 20
+        timeoutSeconds: 3
+        successThreshold: 1
+        failureThreshold: 3
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+      - name: containerdisk
+        containerDisk:
+          image: quay.io/kubevirt/fedora-with-test-tooling-container-disk:latest
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            password: fedora
+            chpasswd: { expire: False }
+            ssh_pwauth: True
+            runcmd:
+              - systemctl enable sshd
+              - systemctl start sshd

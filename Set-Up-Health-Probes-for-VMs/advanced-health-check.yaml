@@ -1,0 +1,36 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vm-health-checker
+  namespace: vm-health-probes
+spec:
+  schedule: "*/2 * * * *"  # Every 2 minutes
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: health-checker
+            image: curlimages/curl:latest
+            command:
+            - /bin/sh
+            - -c
+            - |
+              echo "=== VM Health Check Report $(date) ==="
+              
+              # Check HTTP endpoint
+              if curl -s -f http://vm-health-monitor.vm-health-probes.svc.cluster.local/health; then
+                echo "✓ HTTP Health Check: PASSED"
+              else
+                echo "✗ HTTP Health Check: FAILED"
+              fi
+              
+              # Check main page
+              if curl -s -f http://vm-health-monitor.vm-health-probes.svc.cluster.local/; then
+                echo "✓ Main Page Check: PASSED"
+              else
+                echo "✗ Main Page Check: FAILED"
+              fi
+              
+              echo "=== End Health Check ==="
+          restartPolicy: OnFailure
