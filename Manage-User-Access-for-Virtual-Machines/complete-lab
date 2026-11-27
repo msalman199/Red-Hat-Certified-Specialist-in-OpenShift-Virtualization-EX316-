@@ -1,0 +1,485 @@
+Lab 6: Manage User Access for Virtual Machines
+Objectives
+By the end of this lab, students will be able to:
+
+Understand the fundamentals of Role-Based Access Control (RBAC) in Kubernetes/OpenShift environments
+Create custom roles for VM administrators with specific permissions
+Assign roles to users with granular access control
+Implement RoleBindings to manage access control for virtual machine resources
+Troubleshoot common RBAC issues in virtualization environments
+Apply security best practices for VM access management
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Kubernetes concepts (pods, services, namespaces)
+Familiarity with YAML syntax and structure
+Basic knowledge of Linux command line operations
+Understanding of virtualization concepts
+Access to kubectl command-line tool
+Basic knowledge of OpenShift Virtualization or KubeVirt
+Lab Environment Setup
+Ready-to-Use Cloud Machines: Al Nafi provides pre-configured Linux-based cloud machines with all necessary tools installed. Simply click Start Lab to begin - no need to build your own VM or install additional software.
+
+Your lab environment includes:
+
+OpenShift cluster with virtualization capabilities enabled
+kubectl and oc command-line tools pre-installed
+Sample virtual machines for testing
+Administrative access to create roles and bindings
+Task 1: Create Roles for VM Administrators
+Subtask 1.1: Understand RBAC Components
+Before creating roles, let's understand the key RBAC components:
+
+Role: Defines permissions within a specific namespace
+ClusterRole: Defines permissions across the entire cluster
+RoleBinding: Grants permissions defined in a Role to users/groups within a namespace
+ClusterRoleBinding: Grants permissions defined in a ClusterRole cluster-wide
+Subtask 1.2: Create a Basic VM Administrator Role
+First, let's create a role that allows basic VM management operations.
+
+# Create a new namespace for our lab
+kubectl create namespace vm-lab
+
+# Switch to the vm-lab namespace
+kubectl config set-context --current --namespace=vm-lab
+Create a file named vm-admin-role.yaml:
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: vm-lab
+  name: vm-administrator
+rules:
+- apiGroups: ["kubevirt.io"]
+  resources: ["virtualmachines", "virtualmachineinstances"]
+  verbs: ["get", "list", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["pods", "services", "persistentvolumeclaims"]
+  verbs: ["get", "list", "create", "update", "patch", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list"]
+- apiGroups: ["subresources.kubevirt.io"]
+  resources: ["virtualmachines/start", "virtualmachines/stop", "virtualmachines/restart"]
+  verbs: ["update"]
+Apply the role:
+
+kubectl apply -f vm-admin-role.yaml
+Verify the role was created:
+
+kubectl get roles -n vm-lab
+kubectl describe role vm-administrator -n vm-lab
+Subtask 1.3: Create a VM Viewer Role
+Now, let's create a more restrictive role for users who only need to view VM resources.
+
+Create a file named vm-viewer-role.yaml:
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: vm-lab
+  name: vm-viewer
+rules:
+- apiGroups: ["kubevirt.io"]
+  resources: ["virtualmachines", "virtualmachineinstances"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["pods", "services", "persistentvolumeclaims"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "watch"]
+Apply the viewer role:
+
+kubectl apply -f vm-viewer-role.yaml
+Subtask 1.4: Create a VM Operator Role
+Create an intermediate role for operators who can manage VMs but cannot delete them.
+
+Create a file named vm-operator-role.yaml:
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: vm-lab
+  name: vm-operator
+rules:
+- apiGroups: ["kubevirt.io"]
+  resources: ["virtualmachines", "virtualmachineinstances"]
+  verbs: ["get", "list", "create", "update", "patch"]
+- apiGroups: [""]
+  resources: ["pods", "services", "persistentvolumeclaims"]
+  verbs: ["get", "list", "create", "update", "patch"]
+- apiGroups: ["subresources.kubevirt.io"]
+  resources: ["virtualmachines/start", "virtualmachines/stop", "virtualmachines/restart"]
+  verbs: ["update"]
+Apply the operator role:
+
+kubectl apply -f vm-operator-role.yaml
+Verify all roles are created:
+
+kubectl get roles -n vm-lab
+Task 2: Assign Roles to Users with Specific Permissions
+Subtask 2.1: Create Test Users
+For this lab, we'll simulate users using service accounts, which is a common practice in Kubernetes environments.
+
+# Create service accounts to represent different users
+kubectl create serviceaccount vm-admin-user -n vm-lab
+kubectl create serviceaccount vm-operator-user -n vm-lab
+kubectl create serviceaccount vm-viewer-user -n vm-lab
+Verify the service accounts:
+
+kubectl get serviceaccounts -n vm-lab
+Subtask 2.2: Create RoleBindings for Each User Type
+Create RoleBinding for VM Administrator
+Create a file named vm-admin-rolebinding.yaml:
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vm-admin-binding
+  namespace: vm-lab
+subjects:
+- kind: ServiceAccount
+  name: vm-admin-user
+  namespace: vm-lab
+roleRef:
+  kind: Role
+  name: vm-administrator
+  apiGroup: rbac.authorization.k8s.io
+Apply the RoleBinding:
+
+kubectl apply -f vm-admin-rolebinding.yaml
+Create RoleBinding for VM Operator
+Create a file named vm-operator-rolebinding.yaml:
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vm-operator-binding
+  namespace: vm-lab
+subjects:
+- kind: ServiceAccount
+  name: vm-operator-user
+  namespace: vm-lab
+roleRef:
+  kind: Role
+  name: vm-operator
+  apiGroup: rbac.authorization.k8s.io
+Apply the RoleBinding:
+
+kubectl apply -f vm-operator-rolebinding.yaml
+Create RoleBinding for VM Viewer
+Create a file named vm-viewer-rolebinding.yaml:
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vm-viewer-binding
+  namespace: vm-lab
+subjects:
+- kind: ServiceAccount
+  name: vm-viewer-user
+  namespace: vm-lab
+roleRef:
+  kind: Role
+  name: vm-viewer
+  apiGroup: rbac.authorization.k8s.io
+Apply the RoleBinding:
+
+kubectl apply -f vm-viewer-rolebinding.yaml
+Subtask 2.3: Verify RoleBindings
+Check that all RoleBindings are created correctly:
+
+kubectl get rolebindings -n vm-lab
+kubectl describe rolebinding vm-admin-binding -n vm-lab
+kubectl describe rolebinding vm-operator-binding -n vm-lab
+kubectl describe rolebinding vm-viewer-binding -n vm-lab
+Task 3: Use RoleBindings to Manage Access Control
+Subtask 3.1: Create a Test Virtual Machine
+First, let's create a sample virtual machine to test our access controls.
+
+Create a file named test-vm.yaml:
+
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: test-vm
+  namespace: vm-lab
+spec:
+  running: false
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: test-vm
+    spec:
+      domain:
+        devices:
+          disks:
+          - name: containerdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+        resources:
+          requests:
+            memory: 1Gi
+            cpu: 1
+      volumes:
+      - name: containerdisk
+        containerDisk:
+          image: quay.io/kubevirt/cirros-container-disk-demo
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            password: fedora
+            chpasswd: { expire: False }
+Apply the VM configuration:
+
+kubectl apply -f test-vm.yaml
+Verify the VM is created:
+
+kubectl get vm -n vm-lab
+Subtask 3.2: Test Access Control with Different User Contexts
+Test VM Administrator Access
+Create a script to test admin access:
+
+# Get the admin service account token
+ADMIN_TOKEN=$(kubectl get secret $(kubectl get serviceaccount vm-admin-user -n vm-lab -o jsonpath='{.secrets[0].name}') -n vm-lab -o jsonpath='{.data.token}' | base64 -d)
+
+# Test admin permissions - should succeed
+kubectl auth can-i create vm --as=system:serviceaccount:vm-lab:vm-admin-user -n vm-lab
+kubectl auth can-i delete vm --as=system:serviceaccount:vm-lab:vm-admin-user -n vm-lab
+kubectl auth can-i get vm --as=system:serviceaccount:vm-lab:vm-admin-user -n vm-lab
+Test VM Operator Access
+# Test operator permissions
+kubectl auth can-i create vm --as=system:serviceaccount:vm-lab:vm-operator-user -n vm-lab
+kubectl auth can-i delete vm --as=system:serviceaccount:vm-lab:vm-operator-user -n vm-lab
+kubectl auth can-i get vm --as=system:serviceaccount:vm-lab:vm-operator-user -n vm-lab
+kubectl auth can-i update vm --as=system:serviceaccount:vm-lab:vm-operator-user -n vm-lab
+Test VM Viewer Access
+# Test viewer permissions
+kubectl auth can-i create vm --as=system:serviceaccount:vm-lab:vm-viewer-user -n vm-lab
+kubectl auth can-i delete vm --as=system:serviceaccount:vm-lab:vm-viewer-user -n vm-lab
+kubectl auth can-i get vm --as=system:serviceaccount:vm-lab:vm-viewer-user -n vm-lab
+kubectl auth can-i list vm --as=system:serviceaccount:vm-lab:vm-viewer-user -n vm-lab
+Subtask 3.3: Demonstrate Practical Access Control
+Start the VM as Admin User
+# Start the VM (admin should be able to do this)
+kubectl patch vm test-vm -n vm-lab --type merge -p '{"spec":{"running":true}}'
+
+# Check VM status
+kubectl get vm test-vm -n vm-lab
+kubectl get vmi test-vm -n vm-lab
+Try to Delete VM as Operator (Should Fail)
+# This should fail because operators cannot delete VMs
+kubectl auth can-i delete vm test-vm --as=system:serviceaccount:vm-lab:vm-operator-user -n vm-lab
+View VM as Viewer User
+# This should succeed - viewers can see VMs
+kubectl auth can-i get vm test-vm --as=system:serviceaccount:vm-lab:vm-viewer-user -n vm-lab
+Subtask 3.4: Create Advanced Role with Resource Quotas
+Create a more advanced role that includes resource quota management:
+
+Create a file named vm-resource-admin-role.yaml:
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: vm-lab
+  name: vm-resource-administrator
+rules:
+- apiGroups: ["kubevirt.io"]
+  resources: ["virtualmachines", "virtualmachineinstances"]
+  verbs: ["*"]
+- apiGroups: [""]
+  resources: ["pods", "services", "persistentvolumeclaims", "resourcequotas", "limitranges"]
+  verbs: ["*"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "create", "update", "patch", "delete"]
+- apiGroups: ["subresources.kubevirt.io"]
+  resources: ["*"]
+  verbs: ["*"]
+Apply the advanced role:
+
+kubectl apply -f vm-resource-admin-role.yaml
+Create a RoleBinding for this advanced role:
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vm-resource-admin-binding
+  namespace: vm-lab
+subjects:
+- kind: ServiceAccount
+  name: vm-admin-user
+  namespace: vm-lab
+roleRef:
+  kind: Role
+  name: vm-resource-administrator
+  apiGroup: rbac.authorization.k8s.io
+Save this as vm-resource-admin-rolebinding.yaml and apply:
+
+kubectl apply -f vm-resource-admin-rolebinding.yaml
+Subtask 3.5: Implement Cross-Namespace Access
+Create a ClusterRole for users who need to manage VMs across multiple namespaces:
+
+Create a file named vm-cluster-admin-role.yaml:
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vm-cluster-administrator
+rules:
+- apiGroups: ["kubevirt.io"]
+  resources: ["virtualmachines", "virtualmachineinstances"]
+  verbs: ["get", "list", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["pods", "services", "persistentvolumeclaims"]
+  verbs: ["get", "list", "create", "update", "patch", "delete"]
+Apply the ClusterRole:
+
+kubectl apply -f vm-cluster-admin-role.yaml
+Create a ClusterRoleBinding:
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vm-cluster-admin-binding
+subjects:
+- kind: ServiceAccount
+  name: vm-admin-user
+  namespace: vm-lab
+roleRef:
+  kind: ClusterRole
+  name: vm-cluster-administrator
+  apiGroup: rbac.authorization.k8s.io
+Save as vm-cluster-admin-rolebinding.yaml and apply:
+
+kubectl apply -f vm-cluster-admin-rolebinding.yaml
+Troubleshooting Common Issues
+Issue 1: Permission Denied Errors
+If you encounter permission denied errors:
+
+# Check if the role exists
+kubectl get role <role-name> -n <namespace>
+
+# Check if the rolebinding exists
+kubectl get rolebinding <rolebinding-name> -n <namespace>
+
+# Verify the user has the correct permissions
+kubectl auth can-i <verb> <resource> --as=<user> -n <namespace>
+Issue 2: Service Account Token Issues
+If service account tokens are not working:
+
+# Check if the service account exists
+kubectl get serviceaccount <sa-name> -n <namespace>
+
+# Check if the service account has secrets
+kubectl describe serviceaccount <sa-name> -n <namespace>
+
+# Manually create a token if needed (Kubernetes 1.24+)
+kubectl create token <sa-name> -n <namespace>
+Issue 3: Role Not Taking Effect
+If roles are not taking effect:
+
+# Check the role definition
+kubectl describe role <role-name> -n <namespace>
+
+# Check the rolebinding
+kubectl describe rolebinding <rolebinding-name> -n <namespace>
+
+# Verify API groups and resources
+kubectl api-resources | grep kubevirt
+Verification and Testing
+Final Verification Script
+Create a comprehensive test script to verify all access controls:
+
+#!/bin/bash
+
+echo "=== RBAC Verification Script ==="
+echo
+
+# Test Admin User
+echo "Testing VM Administrator permissions:"
+kubectl auth can-i create vm --as=system:serviceaccount:vm-lab:vm-admin-user -n vm-lab
+kubectl auth can-i delete vm --as=system:serviceaccount:vm-lab:vm-admin-user -n vm-lab
+kubectl auth can-i get vm --as=system:serviceaccount:vm-lab:vm-admin-user -n vm-lab
+echo
+
+# Test Operator User
+echo "Testing VM Operator permissions:"
+kubectl auth can-i create vm --as=system:serviceaccount:vm-lab:vm-operator-user -n vm-lab
+kubectl auth can-i delete vm --as=system:serviceaccount:vm-lab:vm-operator-user -n vm-lab
+kubectl auth can-i get vm --as=system:serviceaccount:vm-lab:vm-operator-user -n vm-lab
+echo
+
+# Test Viewer User
+echo "Testing VM Viewer permissions:"
+kubectl auth can-i create vm --as=system:serviceaccount:vm-lab:vm-viewer-user -n vm-lab
+kubectl auth can-i delete vm --as=system:serviceaccount:vm-lab:vm-viewer-user -n vm-lab
+kubectl auth can-i get vm --as=system:serviceaccount:vm-lab:vm-viewer-user -n vm-lab
+echo
+
+echo "=== Verification Complete ==="
+Save this as verify-rbac.sh, make it executable, and run:
+
+chmod +x verify-rbac.sh
+./verify-rbac.sh
+Cleanup
+To clean up the lab environment:
+
+# Delete the test VM
+kubectl delete vm test-vm -n vm-lab
+
+# Delete RoleBindings
+kubectl delete rolebinding vm-admin-binding vm-operator-binding vm-viewer-binding vm-resource-admin-binding -n vm-lab
+
+# Delete ClusterRoleBinding
+kubectl delete clusterrolebinding vm-cluster-admin-binding
+
+# Delete Roles
+kubectl delete role vm-administrator vm-operator vm-viewer vm-resource-administrator -n vm-lab
+
+# Delete ClusterRole
+kubectl delete clusterrole vm-cluster-administrator
+
+# Delete Service Accounts
+kubectl delete serviceaccount vm-admin-user vm-operator-user vm-viewer-user -n vm-lab
+
+# Delete the namespace
+kubectl delete namespace vm-lab
+Conclusion
+In this comprehensive lab, you have successfully:
+
+Created multiple RBAC roles with different permission levels for VM management, from basic viewers to full administrators
+Implemented granular access control by assigning specific roles to different user types using RoleBindings
+Tested access control mechanisms to ensure users can only perform actions they are authorized for
+Explored advanced RBAC concepts including ClusterRoles and cross-namespace access
+Applied security best practices for managing user access to virtual machine resources
+Key Takeaways
+Why This Matters: Proper access control is crucial in enterprise environments where multiple teams need different levels of access to virtualization resources. RBAC ensures that:
+
+Security: Users can only access resources they need for their job function
+Compliance: Organizations can meet regulatory requirements for access control
+Operational Safety: Prevents accidental deletion or modification of critical resources
+Scalability: Provides a framework for managing access as teams and resources grow
+Real-World Applications
+The skills learned in this lab directly apply to:
+
+Enterprise VM Management: Managing access for development, testing, and production environments
+Multi-Tenant Platforms: Providing isolated access to different teams or customers
+Compliance Requirements: Meeting security standards like SOC 2, PCI DSS, or HIPAA
+DevOps Workflows: Integrating access control into CI/CD pipelines and automation
+Next Steps
+To further develop your RBAC and VM management skills:
+
+Explore integration with external identity providers (LDAP, Active Directory)
+Learn about admission controllers for additional security layers
+Practice with more complex multi-namespace scenarios
+Study audit logging for access control compliance
+This lab provides a solid foundation for managing user access in virtualized environments using open-source tools and industry best practices.
