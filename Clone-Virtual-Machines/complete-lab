@@ -1,0 +1,779 @@
+Lab Material
+Lab 12: Clone Virtual Machines
+Objectives
+By the end of this lab, students will be able to:
+
+Understand the concepts and benefits of VM cloning in virtualization environments
+Create full and linked clones of existing virtual machines using open-source tools
+Deploy cloned VMs with customized configurations for different use cases
+Implement automated cloning processes using shell scripts and configuration management
+Troubleshoot common issues encountered during VM cloning operations
+Apply VM cloning strategies for scaling applications and creating backup systems
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Linux command line operations
+Familiarity with virtualization concepts and terminology
+Knowledge of QEMU/KVM virtualization platform
+Understanding of libvirt management tools
+Basic scripting knowledge (bash/shell scripting)
+Experience with XML configuration files
+Access to a Linux system with virtualization capabilities enabled
+Lab Environment Setup
+Ready-to-Use Cloud Machines: Al Nafi provides pre-configured Linux-based cloud machines with all necessary virtualization tools installed. Simply click Start Lab to access your environment - no need to build your own VM infrastructure.
+
+Your lab environment includes:
+
+CentOS Stream 9 or RHEL 9 compatible system
+QEMU/KVM hypervisor pre-installed
+libvirt management tools configured
+virt-manager GUI available
+Sample VMs ready for cloning operations
+Task 1: Create Clones of Existing VMs
+Subtask 1.1: Verify Lab Environment and Existing VMs
+First, let's examine the current virtualization environment and identify available VMs for cloning.
+
+Check virtualization support and services:
+# Verify KVM support
+lscpu | grep Virtualization
+
+# Check if libvirt service is running
+sudo systemctl status libvirtd
+
+# Start libvirt if not running
+sudo systemctl start libvirtd
+sudo systemctl enable libvirtd
+List existing virtual machines:
+# List all VMs (running and stopped)
+sudo virsh list --all
+
+# Get detailed information about VMs
+sudo virsh dominfo template-vm
+Create a template VM if none exists:
+# Create a simple template VM using virt-install
+sudo virt-install \
+  --name template-vm \
+  --ram 2048 \
+  --disk path=/var/lib/libvirt/images/template-vm.qcow2,size=20 \
+  --vcpus 2 \
+  --os-type linux \
+  --os-variant centos8 \
+  --network bridge=virbr0 \
+  --graphics none \
+  --console pty,target_type=serial \
+  --location 'http://mirror.centos.org/centos/8-stream/BaseOS/x86_64/os/' \
+  --extra-args 'console=ttyS0,115200n8 serial'
+Subtask 1.2: Create Full Clone Using virsh
+A full clone creates a complete, independent copy of the original VM.
+
+Shutdown the source VM before cloning:
+# Gracefully shutdown the template VM
+sudo virsh shutdown template-vm
+
+# Wait for shutdown to complete
+sudo virsh list --all
+Create a full clone using virt-clone:
+# Create full clone with new name and storage
+sudo virt-clone \
+  --original template-vm \
+  --name web-server-clone \
+  --file /var/lib/libvirt/images/web-server-clone.qcow2
+
+# Verify the clone was created
+sudo virsh list --all
+Create multiple clones for different purposes:
+# Create database server clone
+sudo virt-clone \
+  --original template-vm \
+  --name db-server-clone \
+  --file /var/lib/libvirt/images/db-server-clone.qcow2
+
+# Create application server clone
+sudo virt-clone \
+  --original template-vm \
+  --name app-server-clone \
+  --file /var/lib/libvirt/images/app-server-clone.qcow2
+Subtask 1.3: Create Linked Clone Using qemu-img
+Linked clones share the base image with the original VM, saving disk space.
+
+Create a backing file snapshot:
+# Create a snapshot of the original VM disk
+sudo qemu-img create -f qcow2 \
+  -b /var/lib/libvirt/images/template-vm.qcow2 \
+  /var/lib/libvirt/images/linked-clone.qcow2
+
+# Verify the backing file relationship
+sudo qemu-img info /var/lib/libvirt/images/linked-clone.qcow2
+Create VM definition for linked clone:
+# Export original VM configuration
+sudo virsh dumpxml template-vm > /tmp/template-vm.xml
+
+# Create modified configuration for linked clone
+sudo cp /tmp/template-vm.xml /tmp/linked-clone.xml
+
+# Edit the configuration file
+sudo sed -i 's/template-vm/linked-clone/g' /tmp/linked-clone.xml
+sudo sed -i 's/template-vm.qcow2/linked-clone.qcow2/g' /tmp/linked-clone.xml
+
+# Generate new UUID for the clone
+NEW_UUID=$(uuidgen)
+sudo sed -i "s/<uuid>.*<\/uuid>/<uuid>$NEW_UUID<\/uuid>/" /tmp/linked-clone.xml
+
+# Define the new VM
+sudo virsh define /tmp/linked-clone.xml
+Subtask 1.4: Verify Clone Operations
+Check disk usage and relationships:
+# Compare disk sizes
+ls -lh /var/lib/libvirt/images/
+
+# Check backing file chains
+sudo qemu-img info --backing-chain /var/lib/libvirt/images/linked-clone.qcow2
+Test clone functionality:
+# Start one of the cloned VMs
+sudo virsh start web-server-clone
+
+# Check VM status
+sudo virsh list
+
+# Connect to VM console (exit with Ctrl+])
+sudo virsh console web-server-clone
+Task 2: Deploy Cloned VMs with Different Configurations
+Subtask 2.1: Customize Hardware Configuration
+Modify cloned VMs to have different resource allocations based on their intended purpose.
+
+Modify CPU and memory for web server:
+# Shutdown VM if running
+sudo virsh shutdown web-server-clone
+
+# Edit VM configuration
+sudo virsh edit web-server-clone
+Update the configuration with these changes:
+
+<memory unit='KiB'>4194304</memory>  <!-- 4GB RAM -->
+<currentMemory unit='KiB'>4194304</currentMemory>
+<vcpu placement='static'>4</vcpu>    <!-- 4 CPU cores -->
+Configure database server with more resources:
+# Edit database server configuration
+sudo virsh edit db-server-clone
+Update with database-optimized settings:
+
+<memory unit='KiB'>8388608</memory>  <!-- 8GB RAM -->
+<currentMemory unit='KiB'>8388608</currentMemory>
+<vcpu placement='static'>6</vcpu>    <!-- 6 CPU cores -->
+Add additional storage to application server:
+# Create additional disk for app server
+sudo qemu-img create -f qcow2 /var/lib/libvirt/images/app-server-data.qcow2 50G
+
+# Edit app server configuration to add disk
+sudo virsh edit app-server-clone
+Add this disk configuration inside the <devices> section:
+
+<disk type='file' device='disk'>
+  <driver name='qemu' type='qcow2'/>
+  <source file='/var/lib/libvirt/images/app-server-data.qcow2'/>
+  <target dev='vdb' bus='virtio'/>
+  <address type='pci' domain='0x0000' bus='0x00' slot='0x07' function='0x0'/>
+</disk>
+Subtask 2.2: Configure Network Settings
+Set up different network configurations for each cloned VM.
+
+Create custom network bridge for isolated environment:
+# Create network configuration file
+sudo cat > /tmp/isolated-network.xml << EOF
+<network>
+  <name>isolated-net</name>
+  <bridge name='virbr1' stp='on' delay='0'/>
+  <ip address='192.168.100.1' netmask='255.255.255.0'>
+    <dhcp>
+      <range start='192.168.100.100' end='192.168.100.200'/>
+    </dhcp>
+  </ip>
+</network>
+EOF
+
+# Define and start the network
+sudo virsh net-define /tmp/isolated-network.xml
+sudo virsh net-start isolated-net
+sudo virsh net-autostart isolated-net
+Assign different networks to cloned VMs:
+# Configure web server for public network
+sudo virsh edit web-server-clone
+Update network interface configuration:
+
+<interface type='network'>
+  <source network='default'/>
+  <model type='virtio'/>
+  <address type='pci' domain='0x0000' bus='0x00' slot='0x03' function='0x0'/>
+</interface>
+Configure database server for isolated network:
+# Edit database server network settings
+sudo virsh edit db-server-clone
+Update to use isolated network:
+
+<interface type='network'>
+  <source network='isolated-net'/>
+  <model type='virtio'/>
+  <address type='pci' domain='0x0000' bus='0x00' slot='0x03' function='0x0'/>
+</interface>
+Subtask 2.3: Customize VM Startup Configuration
+Configure different boot options and startup scripts for each VM role.
+
+Create cloud-init configuration for web server:
+# Create cloud-init directory
+sudo mkdir -p /var/lib/libvirt/images/cloud-init/web-server
+
+# Create user-data file for web server
+sudo cat > /var/lib/libvirt/images/cloud-init/web-server/user-data << EOF
+#cloud-config
+hostname: web-server-01
+users:
+  - name: webadmin
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC... # Add your SSH key
+packages:
+  - nginx
+  - php-fpm
+  - mysql-client
+runcmd:
+  - systemctl enable nginx
+  - systemctl start nginx
+  - systemctl enable php-fpm
+  - systemctl start php-fpm
+EOF
+
+# Create meta-data file
+sudo cat > /var/lib/libvirt/images/cloud-init/web-server/meta-data << EOF
+instance-id: web-server-01
+local-hostname: web-server-01
+EOF
+Create cloud-init ISO for web server:
+# Create cloud-init ISO
+sudo genisoimage -output /var/lib/libvirt/images/web-server-cloud-init.iso \
+  -volid cidata -joliet -rock \
+  /var/lib/libvirt/images/cloud-init/web-server/user-data \
+  /var/lib/libvirt/images/cloud-init/web-server/meta-data
+Attach cloud-init ISO to web server VM:
+# Edit web server configuration
+sudo virsh edit web-server-clone
+Add cloud-init ISO as CDROM:
+
+<disk type='file' device='cdrom'>
+  <driver name='qemu' type='raw'/>
+  <source file='/var/lib/libvirt/images/web-server-cloud-init.iso'/>
+  <target dev='hda' bus='ide'/>
+  <readonly/>
+  <address type='drive' controller='0' bus='0' target='0' unit='0'/>
+</disk>
+Task 3: Automate Cloning Using Scripts
+Subtask 3.1: Create Basic Cloning Script
+Develop a shell script to automate the VM cloning process.
+
+Create the main cloning script:
+# Create script directory
+sudo mkdir -p /opt/vm-automation
+
+# Create the cloning script
+sudo cat > /opt/vm-automation/clone-vm.sh << 'EOF'
+#!/bin/bash
+
+# VM Cloning Automation Script
+# Usage: ./clone-vm.sh <source-vm> <clone-name> <clone-type>
+
+set -e
+
+# Function to display usage
+usage() {
+    echo "Usage: $0 <source-vm> <clone-name> <clone-type>"
+    echo "Clone types: full, linked"
+    echo "Example: $0 template-vm web-server-01 full"
+    exit 1
+}
+
+# Function to log messages
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+}
+
+# Check arguments
+if [ $# -ne 3 ]; then
+    usage
+fi
+
+SOURCE_VM="$1"
+CLONE_NAME="$2"
+CLONE_TYPE="$3"
+IMAGES_DIR="/var/lib/libvirt/images"
+
+# Validate clone type
+if [[ "$CLONE_TYPE" != "full" && "$CLONE_TYPE" != "linked" ]]; then
+    echo "Error: Clone type must be 'full' or 'linked'"
+    usage
+fi
+
+# Check if source VM exists
+if ! virsh list --all | grep -q "$SOURCE_VM"; then
+    echo "Error: Source VM '$SOURCE_VM' not found"
+    exit 1
+fi
+
+# Check if clone name already exists
+if virsh list --all | grep -q "$CLONE_NAME"; then
+    echo "Error: VM '$CLONE_NAME' already exists"
+    exit 1
+fi
+
+log "Starting $CLONE_TYPE clone of $SOURCE_VM to $CLONE_NAME"
+
+# Ensure source VM is shutdown
+VM_STATE=$(virsh domstate "$SOURCE_VM")
+if [ "$VM_STATE" = "running" ]; then
+    log "Shutting down source VM $SOURCE_VM"
+    virsh shutdown "$SOURCE_VM"
+    
+    # Wait for shutdown
+    while [ "$(virsh domstate "$SOURCE_VM")" = "running" ]; do
+        sleep 2
+    done
+    log "Source VM shutdown complete"
+fi
+
+# Perform cloning based on type
+if [ "$CLONE_TYPE" = "full" ]; then
+    log "Creating full clone..."
+    virt-clone \
+        --original "$SOURCE_VM" \
+        --name "$CLONE_NAME" \
+        --file "$IMAGES_DIR/${CLONE_NAME}.qcow2"
+    
+elif [ "$CLONE_TYPE" = "linked" ]; then
+    log "Creating linked clone..."
+    
+    # Create backing file
+    qemu-img create -f qcow2 \
+        -b "$IMAGES_DIR/${SOURCE_VM}.qcow2" \
+        "$IMAGES_DIR/${CLONE_NAME}.qcow2"
+    
+    # Export and modify VM configuration
+    virsh dumpxml "$SOURCE_VM" > "/tmp/${CLONE_NAME}.xml"
+    
+    # Replace VM name and disk path
+    sed -i "s/<name>$SOURCE_VM<\/name>/<name>$CLONE_NAME<\/name>/" "/tmp/${CLONE_NAME}.xml"
+    sed -i "s/${SOURCE_VM}.qcow2/${CLONE_NAME}.qcow2/g" "/tmp/${CLONE_NAME}.xml"
+    
+    # Generate new UUID
+    NEW_UUID=$(uuidgen)
+    sed -i "s/<uuid>.*<\/uuid>/<uuid>$NEW_UUID<\/uuid>/" "/tmp/${CLONE_NAME}.xml"
+    
+    # Remove MAC address to auto-generate new one
+    sed -i "/<mac address=/d" "/tmp/${CLONE_NAME}.xml"
+    
+    # Define the new VM
+    virsh define "/tmp/${CLONE_NAME}.xml"
+    rm "/tmp/${CLONE_NAME}.xml"
+fi
+
+log "Clone $CLONE_NAME created successfully"
+log "Use 'virsh start $CLONE_NAME' to start the cloned VM"
+EOF
+
+# Make script executable
+sudo chmod +x /opt/vm-automation/clone-vm.sh
+Subtask 3.2: Create Advanced Cloning Script with Configuration
+Develop a more sophisticated script that includes post-clone configuration.
+
+Create advanced cloning script:
+# Create advanced cloning script
+sudo cat > /opt/vm-automation/advanced-clone.sh << 'EOF'
+#!/bin/bash
+
+# Advanced VM Cloning Script with Configuration
+# Usage: ./advanced-clone.sh <config-file>
+
+set -e
+
+# Function to log messages
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+}
+
+# Function to validate configuration
+validate_config() {
+    local config_file="$1"
+    
+    if [ ! -f "$config_file" ]; then
+        echo "Error: Configuration file '$config_file' not found"
+        exit 1
+    fi
+    
+    # Source the configuration
+    source "$config_file"
+    
+    # Validate required variables
+    if [ -z "$SOURCE_VM" ] || [ -z "$CLONE_NAME" ] || [ -z "$CLONE_TYPE" ]; then
+        echo "Error: Missing required configuration variables"
+        echo "Required: SOURCE_VM, CLONE_NAME, CLONE_TYPE"
+        exit 1
+    fi
+}
+
+# Function to modify VM resources
+modify_vm_resources() {
+    local vm_name="$1"
+    
+    if [ -n "$MEMORY_MB" ]; then
+        log "Setting memory to ${MEMORY_MB}MB"
+        virsh setmaxmem "$vm_name" "${MEMORY_MB}M" --config
+        virsh setmem "$vm_name" "${MEMORY_MB}M" --config
+    fi
+    
+    if [ -n "$VCPUS" ]; then
+        log "Setting vCPUs to $VCPUS"
+        virsh setvcpus "$vm_name" "$VCPUS" --config --maximum
+        virsh setvcpus "$vm_name" "$VCPUS" --config
+    fi
+}
+
+# Function to add additional storage
+add_storage() {
+    local vm_name="$1"
+    
+    if [ -n "$ADDITIONAL_DISK_SIZE" ]; then
+        log "Adding additional disk of ${ADDITIONAL_DISK_SIZE}GB"
+        
+        local disk_path="/var/lib/libvirt/images/${vm_name}-data.qcow2"
+        qemu-img create -f qcow2 "$disk_path" "${ADDITIONAL_DISK_SIZE}G"
+        
+        # Attach disk to VM
+        virsh attach-disk "$vm_name" "$disk_path" vdb \
+            --driver qemu --subdriver qcow2 --config
+    fi
+}
+
+# Function to configure network
+configure_network() {
+    local vm_name="$1"
+    
+    if [ -n "$NETWORK_NAME" ]; then
+        log "Configuring network: $NETWORK_NAME"
+        
+        # Get current network interface
+        local mac_line=$(virsh dumpxml "$vm_name" | grep -A1 "interface type='network'" | grep "mac address")
+        
+        if [ -n "$mac_line" ]; then
+            # Update network source
+            virsh detach-interface "$vm_name" network --config
+            virsh attach-interface "$vm_name" network "$NETWORK_NAME" --config
+        fi
+    fi
+}
+
+# Function to create cloud-init configuration
+create_cloud_init() {
+    local vm_name="$1"
+    
+    if [ "$ENABLE_CLOUD_INIT" = "true" ]; then
+        log "Creating cloud-init configuration"
+        
+        local cloud_init_dir="/var/lib/libvirt/images/cloud-init/$vm_name"
+        mkdir -p "$cloud_init_dir"
+        
+        # Create user-data
+        cat > "$cloud_init_dir/user-data" << CLOUD_EOF
+#cloud-config
+hostname: $vm_name
+users:
+  - name: ${CLOUD_USER:-admin}
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - ${SSH_PUBLIC_KEY:-}
+packages:
+  - ${PACKAGES:-curl wget vim}
+runcmd:
+  - ${POST_INSTALL_COMMANDS:-echo "No post-install commands"}
+CLOUD_EOF
+        
+        # Create meta-data
+        cat > "$cloud_init_dir/meta-data" << CLOUD_EOF
+instance-id: $vm_name
+local-hostname: $vm_name
+CLOUD_EOF
+        
+        # Create ISO
+        genisoimage -output "/var/lib/libvirt/images/${vm_name}-cloud-init.iso" \
+            -volid cidata -joliet -rock \
+            "$cloud_init_dir/user-data" \
+            "$cloud_init_dir/meta-data"
+        
+        # Attach ISO to VM
+        virsh attach-disk "$vm_name" \
+            "/var/lib/libvirt/images/${vm_name}-cloud-init.iso" \
+            hda --type cdrom --config
+    fi
+}
+
+# Main execution
+main() {
+    local config_file="$1"
+    
+    if [ $# -ne 1 ]; then
+        echo "Usage: $0 <config-file>"
+        exit 1
+    fi
+    
+    validate_config "$config_file"
+    
+    log "Starting advanced cloning process"
+    log "Source VM: $SOURCE_VM"
+    log "Clone Name: $CLONE_NAME"
+    log "Clone Type: $CLONE_TYPE"
+    
+    # Perform basic cloning
+    /opt/vm-automation/clone-vm.sh "$SOURCE_VM" "$CLONE_NAME" "$CLONE_TYPE"
+    
+    # Apply advanced configurations
+    modify_vm_resources "$CLONE_NAME"
+    add_storage "$CLONE_NAME"
+    configure_network "$CLONE_NAME"
+    create_cloud_init "$CLONE_NAME"
+    
+    log "Advanced cloning completed successfully"
+    
+    if [ "$AUTO_START" = "true" ]; then
+        log "Starting VM $CLONE_NAME"
+        virsh start "$CLONE_NAME"
+    fi
+}
+
+main "$@"
+EOF
+
+# Make script executable
+sudo chmod +x /opt/vm-automation/advanced-clone.sh
+Subtask 3.3: Create Configuration Templates
+Create configuration templates for different VM types.
+
+Create web server configuration template:
+# Create configuration directory
+sudo mkdir -p /opt/vm-automation/configs
+
+# Web server configuration
+sudo cat > /opt/vm-automation/configs/web-server.conf << 'EOF'
+# Web Server Clone Configuration
+SOURCE_VM="template-vm"
+CLONE_NAME="web-server-01"
+CLONE_TYPE="full"
+
+# Resource Configuration
+MEMORY_MB="4096"
+VCPUS="4"
+ADDITIONAL_DISK_SIZE="20"
+
+# Network Configuration
+NETWORK_NAME="default"
+
+# Cloud-init Configuration
+ENABLE_CLOUD_INIT="true"
+CLOUD_USER="webadmin"
+SSH_PUBLIC_KEY="ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC..."
+PACKAGES="nginx php-fpm mysql-client git"
+POST_INSTALL_COMMANDS="systemctl enable nginx && systemctl start nginx"
+
+# Auto-start after cloning
+AUTO_START="true"
+EOF
+
+# Database server configuration
+sudo cat > /opt/vm-automation/configs/database-server.conf << 'EOF'
+# Database Server Clone Configuration
+SOURCE_VM="template-vm"
+CLONE_NAME="db-server-01"
+CLONE_TYPE="full"
+
+# Resource Configuration
+MEMORY_MB="8192"
+VCPUS="6"
+ADDITIONAL_DISK_SIZE="100"
+
+# Network Configuration
+NETWORK_NAME="isolated-net"
+
+# Cloud-init Configuration
+ENABLE_CLOUD_INIT="true"
+CLOUD_USER="dbadmin"
+SSH_PUBLIC_KEY="ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC..."
+PACKAGES="mariadb-server mariadb-client"
+POST_INSTALL_COMMANDS="systemctl enable mariadb && systemctl start mariadb"
+
+# Auto-start after cloning
+AUTO_START="false"
+EOF
+
+# Application server configuration
+sudo cat > /opt/vm-automation/configs/app-server.conf << 'EOF'
+# Application Server Clone Configuration
+SOURCE_VM="template-vm"
+CLONE_NAME="app-server-01"
+CLONE_TYPE="linked"
+
+# Resource Configuration
+MEMORY_MB="6144"
+VCPUS="4"
+ADDITIONAL_DISK_SIZE="50"
+
+# Network Configuration
+NETWORK_NAME="default"
+
+# Cloud-init Configuration
+ENABLE_CLOUD_INIT="true"
+CLOUD_USER="appadmin"
+SSH_PUBLIC_KEY="ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC..."
+PACKAGES="java-11-openjdk tomcat docker"
+POST_INSTALL_COMMANDS="systemctl enable tomcat && systemctl enable docker"
+
+# Auto-start after cloning
+AUTO_START="true"
+EOF
+Subtask 3.4: Test Automated Cloning Scripts
+Execute the automated cloning scripts and verify functionality.
+
+Test basic cloning script:
+# Test full clone creation
+sudo /opt/vm-automation/clone-vm.sh template-vm test-clone-01 full
+
+# Verify clone was created
+sudo virsh list --all | grep test-clone-01
+
+# Test linked clone creation
+sudo /opt/vm-automation/clone-vm.sh template-vm test-clone-02 linked
+
+# Check disk usage comparison
+ls -lh /var/lib/libvirt/images/ | grep test-clone
+Test advanced cloning with configuration:
+# Clone web server using configuration
+sudo /opt/vm-automation/advanced-clone.sh /opt/vm-automation/configs/web-server.conf
+
+# Clone database server
+sudo /opt/vm-automation/advanced-clone.sh /opt/vm-automation/configs/database-server.conf
+
+# Verify configurations were applied
+sudo virsh dominfo web-server-01
+sudo virsh dominfo db-server-01
+Create batch cloning script:
+# Create batch cloning script
+sudo cat > /opt/vm-automation/batch-clone.sh << 'EOF'
+#!/bin/bash
+
+# Batch VM Cloning Script
+# Usage: ./batch-clone.sh <config-directory>
+
+set -e
+
+CONFIG_DIR="$1"
+
+if [ ! -d "$CONFIG_DIR" ]; then
+    echo "Error: Configuration directory '$CONFIG_DIR' not found"
+    exit 1
+fi
+
+echo "Starting batch cloning process..."
+
+for config_file in "$CONFIG_DIR"/*.conf; do
+    if [ -f "$config_file" ]; then
+        echo "Processing configuration: $(basename "$config_file")"
+        /opt/vm-automation/advanced-clone.sh "$config_file"
+        echo "Completed: $(basename "$config_file")"
+        echo "---"
+    fi
+done
+
+echo "Batch cloning completed!"
+EOF
+
+# Make executable
+sudo chmod +x /opt/vm-automation/batch-clone.sh
+
+# Test batch cloning
+sudo /opt/vm-automation/batch-clone.sh /opt/vm-automation/configs
+Troubleshooting Common Issues
+Issue 1: Insufficient Disk Space
+Problem: Cloning fails due to insufficient disk space.
+
+Solution:
+
+# Check available disk space
+df -h /var/lib/libvirt/images/
+
+# Clean up old VM images if needed
+sudo virsh vol-list default
+sudo virsh vol-delete --pool default old-vm.qcow2
+
+# Use linked clones to save space
+sudo /opt/vm-automation/clone-vm.sh template-vm space-saver linked
+Issue 2: Network Conflicts
+Problem: Cloned VMs have duplicate MAC addresses or IP conflicts.
+
+Solution:
+
+# Remove MAC address from VM definition to auto-generate new one
+sudo virsh edit problematic-vm
+# Delete the <mac address='...' /> line
+
+# Restart VM to get new MAC
+sudo virsh destroy problematic-vm
+sudo virsh start problematic-vm
+
+# Check new MAC address
+sudo virsh dumpxml problematic-vm | grep "mac address"
+Issue 3: Cloud-init Not Working
+Problem: Cloud-init configuration not being applied to cloned VMs.
+
+Solution:
+
+# Verify cloud-init ISO is attached
+sudo virsh dumpxml vm-name | grep -A5 cdrom
+
+# Check cloud-init logs inside VM
+sudo virsh console vm-name
+# Inside VM: sudo journalctl -u cloud-init
+
+# Recreate cloud-init ISO with correct format
+sudo genisoimage -output /var/lib/libvirt/images/vm-cloud-init.iso \
+    -volid cidata -joliet -rock user-data meta-data
+Issue 4: Performance Issues with Linked Clones
+Problem: Linked clones showing poor performance.
+
+Solution:
+
+# Check backing file chain depth
+sudo qemu-img info --backing-chain /var/lib/libvirt/images/linked-vm.qcow2
+
+# Commit changes to reduce chain depth if needed
+sudo qemu-img commit /var/lib/libvirt/images/linked-vm.qcow2
+
+# Consider converting to full clone for production use
+sudo qemu-img convert -O qcow2 linked-vm.qcow2 full-vm.qcow2
+Conclusion
+In this comprehensive lab, you have successfully learned and implemented advanced VM cloning techniques using open-source virtualization tools. You accomplished the following key objectives:
+
+Technical Skills Mastered:
+
+Created both full and linked clones using virsh and qemu-img tools
+Customized cloned VMs with different hardware configurations, network settings, and storage options
+Implemented automated cloning processes using shell scripts and configuration templates
+Deployed cloud-init configurations for automated VM customization
+Practical Applications:
+
+Scaling: You can now rapidly deploy multiple VMs for horizontal scaling of applications
+Backup and Recovery: Created backup VMs that can be quickly activated during failures
+Development Environments: Established consistent development and testing environments
+Infrastructure as Code: Implemented automated provisioning processes that ensure reproducible deployments
+Business Value: This lab directly supports enterprise virtualization strategies by providing efficient methods to:
+
+Reduce deployment time from hours to minutes
+Ensure consistency across multiple VM instances
+Minimize storage requirements through linked cloning
+Automate repetitive infrastructure tasks
+The skills you've developed are essential for Red Hat Certified Specialist in OpenShift Virtualization certification and are directly applicable in production environments where rapid VM provisioning and management are critical for business operations.
+
+Your automated cloning scripts and configuration templates can now be integrated into larger infrastructure automation frameworks, supporting DevOps practices and cloud-native application deployment strategies.
