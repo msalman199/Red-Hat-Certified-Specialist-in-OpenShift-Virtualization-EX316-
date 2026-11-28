@@ -1,0 +1,622 @@
+Lab 20: Automate VM Management with Scripts
+Objectives
+By the end of this lab, students will be able to:
+
+Create and execute shell scripts to automate OpenShift Virtualization VM creation, scaling, and deletion
+Implement automated VM configuration backups using shell scripting and oc CLI commands
+Schedule recurring backup jobs using cron
+Implement error handling and logging in VM management scripts
+Verify automation results using OpenShift CLI queries and log inspection
+Prerequisites
+Before starting this lab, students should have:
+
+Basic knowledge of Linux command line operations
+Understanding of shell scripting fundamentals (bash)
+Familiarity with OpenShift Virtualization concepts (VirtualMachine and VirtualMachineInstance resources)
+Knowledge of Kubernetes resources and YAML syntax
+Experience with cron job scheduling
+Required tools (all pre-installed in the lab environment, listed here for reference):
+
+# Verify required CLI tools are available
+oc version --client
+jq --version
+crontab -l || echo "no crontab yet (this is fine)"
+If jq is missing on a self-managed machine, install it with:
+
+sudo dnf install -y jq
+Lab Environment Setup
+Ready-to-Use Cloud Machines: Al Nafi provides pre-configured Linux-based cloud machines with OpenShift Virtualization already installed. Simply click Start Lab to access your environment - no need to build your own VM or install additional software.
+
+Your lab environment includes:
+
+OpenShift cluster with the OpenShift Virtualization operator installed
+oc CLI tool pre-configured and logged in
+Sample VM templates and resources
+Permissions to create namespaces and manage VirtualMachine resources
+This lab uses only the core kubevirt.io/v1 VirtualMachine and VirtualMachineInstance APIs, which are guaranteed to exist on any cluster with OpenShift Virtualization installed. Backups are implemented as YAML exports of these objects rather than storage-level snapshots, so the lab does not depend on any optional snapshot API being enabled in your cluster.
+
+# Confirm the VirtualMachine CRD is available before starting
+oc get crd virtualmachines.kubevirt.io
+Expected result: the command returns a single CRD named virtualmachines.kubevirt.io. If it returns "not found," the Virtualization operator is not installed and you should contact your lab administrator before continuing.
+
+Task 1: Automate VM Creation, Scaling, and Deletion
+Subtask 1.1: Set Up the Automation Environment
+# Create directory structure for VM automation
+mkdir -p ~/vm-automation/{scripts,logs,backups,config}
+cd ~/vm-automation
+
+# Create configuration file for default values
+cat > config/vm-defaults.conf << 'EOF'
+# Default VM Configuration
+DEFAULT_NAMESPACE="vm-automation"
+DEFAULT_CPU_CORES="2"
+DEFAULT_MEMORY="4Gi"
+LOG_DIR="$HOME/vm-automation/logs"
+BACKUP_DIR="$HOME/vm-automation/backups"
+EOF
+
+source config/vm-defaults.conf
+
+# Create the working namespace
+oc create namespace vm-automation --dry-run=client -o yaml | oc apply -f -
+Deliverable: running cat ~/vm-automation/config/vm-defaults.conf shows the four configuration variables, and oc get namespace vm-automation shows the namespace in Active status.
+
+Subtask 1.2: Create the VM Creation Script
+cat > scripts/create-vm.sh << 'EOF'
+#!/bin/bash
+
+# VM Creation Automation Script
+# Usage: ./create-vm.sh <vm-name> [cpu-cores] [memory] [namespace]
+
+set -e
+
+source "$(dirname "$0")/../config/vm-defaults.conf"
+
+log_message() {
+    mkdir -p "$LOG_DIR"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_DIR/vm-creation.log"
+}
+
+validate_input() {
+    if [[ -z "$1" ]]; then
+        echo "Error: VM name is required"
+        echo "Usage: $0 <vm-name> [cpu-cores] [memory] [namespace]"
+        exit 1
+    fi
+}
+
+check_vm_exists() {
+    local vm_name=$1
+    local namespace=$2
+
+    if oc get vm "$vm_name" -n "$namespace" &>/dev/null; then
+        log_message "ERROR: VM $vm_name already exists in namespace $namespace"
+        exit 1
+    fi
+}
+
+create_vm() {
+    local vm_name=$1
+    local cpu_cores=$2
+    local memory=$3
+    local namespace=$4
+
+    log_message "Creating VM: $vm_name with $cpu_cores CPU, $memory memory"
+
+    oc create namespace "$namespace" --dry-run=client -o yaml | oc apply -f - >/dev/null
+
+    cat > "/tmp/${vm_name}-vm.yaml" << VMEOF
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: $vm_name
+  namespace: $namespace
+  labels:
+    app: automated-vm
+    created-by: automation-script
+spec:
+  running: false
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: $vm_name
+    spec:
+      domain:
+        cpu:
+          cores: $cpu_cores
+        resources:
+          requests:
+            memory: $memory
+        devices:
+          disks:
+          - name: containerdisk
+            disk:
+              bus: virtio
+          - name: cloudinitdisk
+            disk:
+              bus: virtio
+          interfaces:
+          - name: default
+            masquerade: {}
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+      - name: containerdisk
+        containerDisk:
+          image: quay.io/kubevirt/fedora-cloud-container-disk-demo
+      - name: cloudinitdisk
+        cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            password: fedora
+            chpasswd: { expire: False }
+            ssh_pwauth: True
+VMEOF
+
+    oc apply -f "/tmp/${vm_name}-vm.yaml"
+    rm "/tmp/${vm_name}-vm.yaml"
+
+    log_message "VM $vm_name created successfully in namespace $namespace"
+}
+
+start_vm() {
+    local vm_name=$1
+    local namespace=$2
+
+    log_message "Starting VM: $vm_name"
+    oc patch vm "$vm_name" -n "$namespace" --type merge -p '{"spec":{"running":true}}'
+
+    log_message "Waiting for VM to be ready..."
+    oc wait --for=condition=Ready vmi "$vm_name" -n "$namespace" --timeout=300s
+
+    log_message "VM $vm_name is now running"
+}
+
+main() {
+    VM_NAME=$1
+    CPU_CORES=${2:-$DEFAULT_CPU_CORES}
+    MEMORY=${3:-$DEFAULT_MEMORY}
+    NAMESPACE=${4:-$DEFAULT_NAMESPACE}
+
+    validate_input "$VM_NAME"
+
+    log_message "Starting VM creation process for $VM_NAME"
+
+    check_vm_exists "$VM_NAME" "$NAMESPACE"
+    create_vm "$VM_NAME" "$CPU_CORES" "$MEMORY" "$NAMESPACE"
+    start_vm "$VM_NAME" "$NAMESPACE"
+
+    log_message "VM creation process completed successfully"
+}
+
+main "$@"
+EOF
+
+chmod +x scripts/create-vm.sh
+Subtask 1.3: Create the VM Scaling and Deletion Scripts
+cat > scripts/scale-vm.sh << 'EOF'
+#!/bin/bash
+
+# VM Scaling Automation Script
+# Usage: ./scale-vm.sh <vm-name> [--cpu <cores>] [--memory <size>] [--namespace <ns>]
+
+set -e
+
+source "$(dirname "$0")/../config/vm-defaults.conf"
+
+log_message() {
+    mkdir -p "$LOG_DIR"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_DIR/vm-scaling.log"
+}
+
+validate_input() {
+    if [[ -z "$1" ]]; then
+        echo "Error: VM name is required"
+        echo "Usage: $0 <vm-name> [--cpu <cores>] [--memory <size>] [--namespace <ns>]"
+        exit 1
+    fi
+}
+
+check_vm_exists() {
+    local vm_name=$1
+    local namespace=$2
+    if ! oc get vm "$vm_name" -n "$namespace" &>/dev/null; then
+        log_message "ERROR: VM $vm_name does not exist in namespace $namespace"
+        exit 1
+    fi
+}
+
+is_vm_running() {
+    local vm_name=$1
+    local namespace=$2
+    oc get vmi "$vm_name" -n "$namespace" &>/dev/null
+}
+
+scale_cpu() {
+    local vm_name=$1
+    local namespace=$2
+    local new_cpu=$3
+    log_message "Scaling CPU to $new_cpu cores"
+    oc patch vm "$vm_name" -n "$namespace" --type merge \
+        -p "{\"spec\":{\"template\":{\"spec\":{\"domain\":{\"cpu\":{\"cores\":$new_cpu}}}}}}"
+}
+
+scale_memory() {
+    local vm_name=$1
+    local namespace=$2
+    local new_memory=$3
+    log_message "Scaling memory to $new_memory"
+    oc patch vm "$vm_name" -n "$namespace" --type merge \
+        -p "{\"spec\":{\"template\":{\"spec\":{\"domain\":{\"resources\":{\"requests\":{\"memory\":\"$new_memory\"}}}}}}}"
+}
+
+restart_vm_if_running() {
+    local vm_name=$1
+    local namespace=$2
+
+    if is_vm_running "$vm_name" "$namespace"; then
+        log_message "VM is running. Restarting to apply changes..."
+        oc patch vm "$vm_name" -n "$namespace" --type merge -p '{"spec":{"running":false}}'
+        while oc get vmi "$vm_name" -n "$namespace" &>/dev/null; do
+            sleep 5
+        done
+        oc patch vm "$vm_name" -n "$namespace" --type merge -p '{"spec":{"running":true}}'
+        oc wait --for=condition=Ready vmi "$vm_name" -n "$namespace" --timeout=300s
+        log_message "VM restarted successfully"
+    else
+        log_message "VM is not running. Changes will take effect on next start."
+    fi
+}
+
+main() {
+    VM_NAME=$1
+    NAMESPACE=$DEFAULT_NAMESPACE
+    NEW_CPU=""
+    NEW_MEMORY=""
+
+    validate_input "$VM_NAME"
+    shift
+
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --cpu) NEW_CPU=$2; shift 2 ;;
+            --memory) NEW_MEMORY=$2; shift 2 ;;
+            --namespace) NAMESPACE=$2; shift 2 ;;
+            *) echo "Unknown option: $1"; exit 1 ;;
+        esac
+    done
+
+    if [[ -z "$NEW_CPU" && -z "$NEW_MEMORY" ]]; then
+        echo "Error: At least one scaling option (--cpu or --memory) must be provided"
+        exit 1
+    fi
+
+    log_message "Starting VM scaling process for $VM_NAME"
+    check_vm_exists "$VM_NAME" "$NAMESPACE"
+
+    [[ -n "$NEW_CPU" ]] && scale_cpu "$VM_NAME" "$NAMESPACE" "$NEW_CPU"
+    [[ -n "$NEW_MEMORY" ]] && scale_memory "$VM_NAME" "$NAMESPACE" "$NEW_MEMORY"
+
+    restart_vm_if_running "$VM_NAME" "$NAMESPACE"
+
+    log_message "VM scaling process completed successfully"
+}
+
+main "$@"
+EOF
+
+chmod +x scripts/scale-vm.sh
+
+cat > scripts/delete-vm.sh << 'EOF'
+#!/bin/bash
+
+# VM Deletion Automation Script
+# Usage: ./delete-vm.sh <vm-name> [namespace] [--force]
+
+set -e
+
+source "$(dirname "$0")/../config/vm-defaults.conf"
+
+log_message() {
+    mkdir -p "$LOG_DIR"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_DIR/vm-deletion.log"
+}
+
+validate_input() {
+    if [[ -z "$1" ]]; then
+        echo "Error: VM name is required"
+        echo "Usage: $0 <vm-name> [namespace] [--force]"
+        exit 1
+    fi
+}
+
+check_vm_exists() {
+    local vm_name=$1
+    local namespace=$2
+    if ! oc get vm "$vm_name" -n "$namespace" &>/dev/null; then
+        log_message "ERROR: VM $vm_name does not exist in namespace $namespace"
+        exit 1
+    fi
+}
+
+stop_vm() {
+    local vm_name=$1
+    local namespace=$2
+
+    if oc get vmi "$vm_name" -n "$namespace" &>/dev/null; then
+        log_message "Stopping VM: $vm_name"
+        oc patch vm "$vm_name" -n "$namespace" --type merge -p '{"spec":{"running":false}}'
+        while oc get vmi "$vm_name" -n "$namespace" &>/dev/null; do
+            sleep 5
+        done
+        log_message "VM stopped successfully"
+    else
+        log_message "VM is not running"
+    fi
+}
+
+delete_vm() {
+    local vm_name=$1
+    local namespace=$2
+    log_message "Deleting VM: $vm_name"
+    oc delete vm "$vm_name" -n "$namespace"
+    log_message "VM $vm_name deleted successfully"
+}
+
+confirm_deletion() {
+    local vm_name=$1
+    local force=$2
+
+    if [[ "$force" != "true" ]]; then
+        echo -n "Are you sure you want to delete VM $vm_name? (y/N): "
+        read -r confirmation
+        if [[ "$confirmation" != "y" && "$confirmation" != "Y" ]]; then
+            log_message "Deletion cancelled by user"
+            exit 0
+        fi
+    fi
+}
+
+main() {
+    VM_NAME=$1
+    NAMESPACE=${2:-$DEFAULT_NAMESPACE}
+    FORCE=false
+
+    shift 2 2>/dev/null || shift $#
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --force) FORCE=true; shift ;;
+            *) echo "Unknown option: $1"; exit 1 ;;
+        esac
+    done
+
+    validate_input "$VM_NAME"
+
+    log_message "Starting VM deletion process for $VM_NAME"
+    check_vm_exists "$VM_NAME" "$NAMESPACE"
+    confirm_deletion "$VM_NAME" "$FORCE"
+    stop_vm "$VM_NAME" "$NAMESPACE"
+    delete_vm "$VM_NAME" "$NAMESPACE"
+
+    log_message "VM deletion process completed successfully"
+}
+
+main "$@"
+EOF
+
+chmod +x scripts/delete-vm.sh
+Subtask 1.4: Test the VM Management Scripts
+# Create a test VM
+./scripts/create-vm.sh test-vm-1 2 4Gi vm-automation
+
+# Verify creation
+oc get vm test-vm-1 -n vm-automation
+
+# Scale the VM
+./scripts/scale-vm.sh test-vm-1 --cpu 4 --memory 8Gi --namespace vm-automation
+
+# Verify scaling
+oc get vm test-vm-1 -n vm-automation -o jsonpath='{.spec.template.spec.domain.cpu.cores}{"\n"}'
+oc get vm test-vm-1 -n vm-automation -o jsonpath='{.spec.template.spec.domain.resources.requests.memory}{"\n"}'
+
+# Delete the VM
+./scripts/delete-vm.sh test-vm-1 vm-automation --force
+
+# Verify deletion
+oc get vm -n vm-automation
+Deliverable: the CPU query prints 4, the memory query prints 8Gi, and after deletion oc get vm -n vm-automation returns "No resources found in vm-automation namespace." The ~/vm-automation/logs/vm-creation.log, vm-scaling.log, and vm-deletion.log files each contain timestamped entries documenting every step.
+
+Task 2: Automate VM Configuration Backups and Scheduling
+OpenShift Virtualization backups in this lab are implemented as timestamped YAML exports of the VirtualMachine object and its related PersistentVolumeClaim, Secret, and ConfigMap resources. This approach relies only on the stable kubevirt.io/v1 API and standard oc get -o yaml exports, so it works on any cluster with the Virtualization operator installed, regardless of whether an optional snapshot controller is enabled.
+
+Subtask 2.1: Create the VM Backup Script
+cat > scripts/backup-vm.sh << 'EOF'
+#!/bin/bash
+
+# VM Backup Automation Script
+# Usage: ./backup-vm.sh <vm-name> [namespace] [retention-days]
+
+set -e
+
+source "$(dirname "$0")/../config/vm-defaults.conf"
+
+log_message() {
+    mkdir -p "$LOG_DIR"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_DIR/vm-backups.log"
+}
+
+validate_input() {
+    if [[ -z "$1" ]]; then
+        echo "Error: VM name is required"
+        echo "Usage: $0 <vm-name> [namespace] [retention-days]"
+        exit 1
+    fi
+}
+
+check_vm_exists() {
+    local vm_name=$1
+    local namespace=$2
+    if ! oc get vm "$vm_name" -n "$namespace" &>/dev/null; then
+        log_message "ERROR: VM $vm_name does not exist in namespace $namespace"
+        exit 1
+    fi
+}
+
+backup_vm_config() {
+    local vm_name=$1
+    local namespace=$2
+    local backup_dir=$3
+
+    log_message "Backing up VM configuration for $vm_name"
+
+    oc get vm "$vm_name" -n "$namespace" -o yaml > "$backup_dir/${vm_name}-vm.yaml"
+
+    if oc get vmi "$vm_name" -n "$namespace" &>/dev/null; then
+        oc get vmi "$vm_name" -n "$namespace" -o yaml > "$backup_dir/${vm_name}-vmi.yaml"
+    fi
+
+    oc get pvc -n "$namespace" -l "kubevirt.io/vm=$vm_name" -o yaml \
+        > "$backup_dir/${vm_name}-pvcs.yaml" 2>/dev/null || true
+    oc get secret -n "$namespace" -l "kubevirt.io/vm=$vm_name" -o yaml \
+        > "$backup_dir/${vm_name}-secrets.yaml" 2>/dev/null || true
+    oc get configmap -n "$namespace" -l "kubevirt.io/vm=$vm_name" -o yaml \
+        > "$backup_dir/${vm_name}-configmaps.yaml" 2>/dev/null || true
+
+    log_message "VM configuration backup completed"
+}
+
+backup_vm_metadata() {
+    local vm_name=$1
+    local namespace=$2
+    local backup_dir=$3
+
+    log_message "Creating metadata backup for $vm_name"
+
+    cat > "$backup_dir/backup-metadata.json" << METAEOF
+{
+  "vm_name": "$vm_name",
+  "namespace": "$namespace",
+  "backup_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "created_by": "vm-backup-automation",
+  "retention_days": $RETENTION_DAYS
+}
+METAEOF
+
+    oc get vm "$vm_name" -n "$namespace" -o json | jq '{
+        name: .metadata.name,
+        namespace: .metadata.namespace,
+        created: .metadata.creationTimestamp,
+        running: .spec.running,
+        cpu: .spec.template.spec.domain.cpu.cores,
+        memory: .spec.template.spec.domain.resources.requests.memory
+    }' > "$backup_dir/vm-status.json"
+
+    log_message "Metadata backup completed"
+}
+
+compress_backup() {
+    local backup_dir=$1
+    local vm_name=$2
+    local archive_name="${vm_name}-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
+
+    log_message "Compressing backup into $archive_name"
+
+    tar -czf "$BACKUP_DIR/$archive_name" -C "$BACKUP_DIR" "$(basename "$backup_dir")"
+
+    log_message "Backup compressed successfully: $BACKUP_DIR/$archive_name"
+}
+
+cleanup_old_backups() {
+    local vm_name=$1
+    local retention_days=$2
+
+    log_message "Cleaning up backups older than $retention_days days for $vm_name"
+
+    find "$BACKUP_DIR" -maxdepth 1 -name "${vm_name}-backup-*.tar.gz" -mtime "+$retention_days" -delete
+    find "$BACKUP_DIR" -maxdepth 1 -name "${vm_name}-2*" -type d -mtime "+$retention_days" -exec rm -rf {} + 2>/dev/null || true
+
+    log_message "Old backup cleanup completed"
+}
+
+main() {
+    mkdir -p "$LOG_DIR" "$BACKUP_DIR"
+
+    VM_NAME=$1
+    NAMESPACE=${2:-$DEFAULT_NAMESPACE}
+    RETENTION_DAYS=${3:-30}
+
+    validate_input "$VM_NAME"
+
+    BACKUP_DIR_VM="$BACKUP_DIR/${VM_NAME}-$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$BACKUP_DIR_VM"
+
+    log_message "Starting backup process for VM $VM_NAME"
+
+    check_vm_exists "$VM_NAME" "$NAMESPACE"
+
+    backup_vm_metadata "$VM_NAME" "$NAMESPACE" "$BACKUP_DIR_VM"
+    backup_vm_config "$VM_NAME" "$NAMESPACE" "$BACKUP_DIR_VM"
+    compress_backup "$BACKUP_DIR_VM" "$VM_NAME"
+    rm -rf "$BACKUP_DIR_VM"
+
+    cleanup_old_backups "$VM_NAME" "$RETENTION_DAYS"
+
+    log_message "Backup process completed successfully for $VM_NAME"
+}
+
+main "$@"
+EOF
+
+chmod +x scripts/backup-vm.sh
+Subtask 2.2: Test the Backup Script
+# Create a VM to back up
+./scripts/create-vm.sh backup-test-vm 2 4Gi vm-automation
+
+# Run a backup with a 30-day retention window
+./scripts/backup-vm.sh backup-test-vm vm-automation 30
+
+# Verify the compressed backup archive exists
+ls -lh ~/vm-automation/backups/backup-test-vm-backup-*.tar.gz
+
+# Inspect the archive contents
+tar -tzf ~/vm-automation/backups/backup-test-vm-backup-*.tar.gz
+Deliverable: ls shows a single .tar.gz file named backup-test-vm-backup-<timestamp>.tar.gz, and tar -tzf lists backup-metadata.json, vm-status.json, backup-test-vm-vm.yaml, and (since PVCs/secrets/configmaps may not match the label selector) at minimum the metadata and VM YAML files inside a single top-level directory.
+
+Subtask 2.3: Schedule Recurring Backups with Cron
+# Create a wrapper script that cron will invoke
+cat > scripts/scheduled-backup.sh << 'EOF'
+#!/bin/bash
+# Wrapper script for cron-scheduled backups
+cd "$HOME/vm-automation" || exit 1
+./scripts/backup-vm.sh backup-test-vm vm-automation 30 >> "$HOME/vm-automation/logs/cron-backup.log" 2>&1
+EOF
+
+chmod +x scripts/scheduled-backup.sh
+
+# Install a crontab entry that runs the backup every day at 2:00 AM
+( crontab -l 2>/dev/null | grep -v scheduled-backup.sh ; \
+  echo "0 2 * * * $HOME/vm-automation/scripts/scheduled-backup.sh" ) | crontab -
+
+# Verify the cron entry was installed
+crontab -l | grep scheduled-backup.sh
+To validate the wrapper script works correctly without waiting for the schedule, run it manually and check its log output:
+
+./scripts/scheduled-backup.sh
+cat ~/vm-automation/logs/cron-backup.log
+Deliverable: crontab -l shows a line scheduling scheduled-backup.sh at 0 2 * * *, and manually running the wrapper script produces log entries in cron-backup.log matching the same format as vm-backups.log, ending with "Backup process completed successfully for backup-test-vm."
+
+Clean up the test VM once you have confirmed the backup workflow:
+
+./scripts/delete-vm.sh backup-test-vm vm-automation --force
+Expected Outcomes
+A working set of shell scripts (create-vm.sh, scale-vm.sh, delete-vm.sh, backup-vm.sh) that reliably automate the VM lifecycle using only stable kubevirt.io/v1 APIs
+Timestamped, compressed backup archives of VM configuration stored under ~/vm-automation/backups, with a working cron schedule to produce them automatically
+Consistent, timestamped logs for every automation action under ~/vm-automation/logs, demonstrating traceable error handling
+Troubleshooting
+Issue 1: oc wait --for=condition=Ready vmi ... times out during VM creation or scaling. Diagnostic hint: run oc get events -n vm-automation --sort-by=.lastTimestamp and check whether the container disk image is still being pulled, or whether the node has insufficient CPU/memory to schedule the launcher pod.
+
+Issue 2: The cron job never produces a new backup archive. Diagnostic hint: confirm the cron daemon is running (systemctl status crond), check that the wrapper script uses absolute paths (relative paths fail under cron's minimal environment), and inspect ~/vm-automation/logs/cron-backup.log for the actual error emitted by backup-vm.sh.
+
+Conclusion
+In this lab, students built a complete set of shell-based automation scripts for managing OpenShift Virtualization VMs, covering creation, scaling, deletion, and configuration backup, entirely through the oc CLI and the stable kubevirt.io/v1 API. The scripts demonstrate practical automation patterns including input validation, idempotency checks, structured logging, and graceful shutdown before destructive operations, all of which are directly applicable to production VM fleet management. By implementing backups as compressed YAML exports rather than relying on optional snapshot controllers, the lab also illustrates how to build automation that degrades gracefully across differently configured clusters. Students who want to extend this work should explore integrating these scripts with a real snapshot or CSI-based backup solution where available, adding Slack or email alerting on script failure, and converting the cron-based schedule into a Kubernetes CronJob running inside the cluster for centralized management.

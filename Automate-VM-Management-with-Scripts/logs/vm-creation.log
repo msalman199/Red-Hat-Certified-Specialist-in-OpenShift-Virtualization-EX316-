@@ -1,0 +1,4 @@
+[2026-11-28 02:37:43] Starting VM creation process for test-vm-1
+[2026-11-28 02:37:43] Creating VM: test-vm-1 with 2 CPU, 4Gi memory
+[2026-11-28 02:38:05] Starting VM creation process for backup-test-vm
+[2026-11-28 02:38:05] Creating VM: backup-test-vm with 2 CPU, 4Gi memory

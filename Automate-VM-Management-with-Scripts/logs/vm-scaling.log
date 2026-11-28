@@ -1,0 +1,2 @@
+[2026-11-28 02:37:43] Starting VM scaling process for test-vm-1
+[2026-11-28 02:37:44] ERROR: VM test-vm-1 does not exist in namespace vm-automation

@@ -1,0 +1,4 @@
+[2026-11-28 02:38:05] Starting backup process for VM backup-test-vm
+[2026-11-28 02:38:05] ERROR: VM backup-test-vm does not exist in namespace vm-automation
+[2026-11-28 02:38:31] Starting backup process for VM backup-test-vm
+[2026-11-28 02:38:31] ERROR: VM backup-test-vm does not exist in namespace vm-automation

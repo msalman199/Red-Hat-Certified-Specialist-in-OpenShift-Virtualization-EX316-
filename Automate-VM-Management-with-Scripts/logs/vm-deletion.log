@@ -1,0 +1,4 @@
+[2026-11-28 02:37:44] Starting VM deletion process for test-vm-1
+[2026-11-28 02:37:44] ERROR: VM test-vm-1 does not exist in namespace vm-automation
+[2026-11-28 02:38:40] Starting VM deletion process for backup-test-vm
+[2026-11-28 02:38:40] ERROR: VM backup-test-vm does not exist in namespace vm-automation
