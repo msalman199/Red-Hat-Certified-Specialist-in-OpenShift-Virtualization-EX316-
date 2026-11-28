@@ -1,0 +1,233 @@
+Lab 18: Monitor VM Metrics with Prometheus and Grafana
+Objectives
+By the end of this lab, you will be able to:
+
+Enable and verify the OpenShift user workload monitoring stack
+Deploy a virtual machine with OpenShift Virtualization and confirm it is exposing metrics
+Configure a ServiceMonitor and PrometheusRule to collect and alert on VM metrics
+Query VM performance data directly from Prometheus and interpret the results
+Troubleshoot common gaps in a VM monitoring pipeline
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes and OpenShift concepts (namespaces, pods, services)
+Familiarity with YAML configuration files
+Basic knowledge of virtual machine concepts (CPU, memory, disk, network)
+Experience with command-line interfaces
+Access to an OpenShift cluster with cluster-admin rights and the OpenShift Virtualization (CNV) operator already installed
+Required tools (verify they are installed and on your PATH):
+
+oc version --client
+No additional client-side packages need to be installed for this lab; all components are deployed into the cluster using oc apply.
+
+Lab Environment
+Al Nafi provides pre-configured Linux-based cloud machines for this lab. Simply click Start Lab to access your environment. Your lab environment includes:
+
+An OpenShift cluster with administrative access
+The OpenShift Virtualization (CNV) operator pre-installed
+Command-line tools (oc, curl)
+Web browser access to the OpenShift console
+This lab intentionally scopes down to the built-in OpenShift monitoring stack (Prometheus, Alertmanager) rather than deploying a separate Grafana operator, so that every step can be verified with oc and curl and completed within the time budget. This is the same monitoring pipeline used in production OpenShift clusters, so the skills transfer directly.
+
+Task 1: Enable Monitoring and Deploy a Monitored VM
+Step 1.1: Verify the cluster and existing monitoring stack
+# Verify cluster connection
+oc whoami
+oc cluster-info
+
+# Confirm the platform monitoring stack is running
+oc get pods -n openshift-monitoring | grep prometheus-k8s
+
+# Confirm OpenShift Virtualization is installed
+oc get csv -n openshift-cnv | grep kubevirt-hyperconverged
+Deliverable: Output showing at least one prometheus-k8s-* pod in Running state, and a kubevirt-hyperconverged-operator CSV with phase Succeeded.
+
+Step 1.2: Enable user workload monitoring
+By default, OpenShift only monitors platform components. To scrape metrics from workloads in your own namespaces (including VM launcher pods), you must enable user workload monitoring.
+
+cat << 'EOF' | oc apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    enableUserWorkload: true
+EOF
+Wait for the user workload monitoring components to start:
+
+oc get pods -n openshift-user-workload-monitoring -w
+Press Ctrl+C once you see prometheus-user-workload-0 and prometheus-user-workload-1 in Running state, along with a thanos-ruler-user-workload-0 pod.
+
+Deliverable: oc get pods -n openshift-user-workload-monitoring shows the prometheus-user-workload-* and thanos-ruler-user-workload-* pods as Running.
+
+Step 1.3: Create a namespace and deploy a monitored VM
+oc new-project vm-workloads
+oc label namespace vm-workloads openshift.io/cluster-monitoring=true
+The openshift.io/cluster-monitoring=true label is what tells the user workload Prometheus that ServiceMonitors in this namespace should be scraped.
+
+Deploy a small test VM:
+
+cat << 'EOF' | oc apply -f -
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: web-server-vm
+  namespace: vm-workloads
+  labels:
+    app: web-server
+spec:
+  running: true
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: web-server-vm
+    spec:
+      domain:
+        cpu:
+          cores: 1
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: containerdisk
+          - disk:
+              bus: virtio
+            name: cloudinitdisk
+          interfaces:
+          - masquerade: {}
+            name: default
+        resources:
+          requests:
+            memory: 1Gi
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+      - containerDisk:
+          image: quay.io/kubevirt/fedora-cloud-container-disk-demo
+        name: containerdisk
+      - cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            password: fedora
+            chpasswd: { expire: False }
+        name: cloudinitdisk
+EOF
+Verify the VM starts:
+
+oc get vm -n vm-workloads
+oc get vmi -n vm-workloads
+oc get pods -n vm-workloads
+Deliverable: oc get vmi -n vm-workloads shows web-server-vm with PHASE equal to Running, and a corresponding virt-launcher-web-server-vm-* pod in Running state.
+
+Task 2: Collect and Query VM Metrics
+Step 2.1: Confirm KubeVirt is exposing metrics
+KubeVirt components (virt-controller, virt-handler, virt-api) expose Prometheus metrics automatically once the HyperConverged operator is installed, and the operator ships its own ServiceMonitors in the openshift-cnv namespace. Confirm this:
+
+oc get servicemonitor -n openshift-cnv
+Deliverable: A list of ServiceMonitors such as kubevirt-prometheus-metrics or similar KubeVirt-managed ServiceMonitors in the openshift-cnv namespace. These are created automatically by the HyperConverged operator; you do not need to author your own ServiceMonitor for core KubeVirt metrics.
+
+Step 2.2: Query VM metrics from Prometheus
+OpenShift exposes Prometheus through a route. Use it to query metrics directly with curl.
+
+# Get the Prometheus route host
+PROM_HOST=$(oc get route prometheus-k8s -n openshift-monitoring -o jsonpath='{.spec.host}')
+
+# Get a token for your current user (must have access to the thanos-querier/prometheus API)
+TOKEN=$(oc whoami -t)
+
+# Query for KubeVirt VMI CPU metrics (via thanos-querier, which aggregates
+# both platform and user workload Prometheus data)
+THANOS_HOST=$(oc get route thanos-querier -n openshift-monitoring -o jsonpath='{.spec.host}')
+
+curl -sk -H "Authorization: Bearer $TOKEN" \
+  "https://$THANOS_HOST/api/v1/query?query=kubevirt_vmi_info" | head -c 1000
+Deliverable: A JSON response with "status":"success" and a result array containing at least one time series with a name label equal to web-server-vm. If the array is empty, wait one to two minutes for the next scrape interval and retry.
+
+Step 2.3: Query CPU and memory usage for the VM
+THANOS_HOST=$(oc get route thanos-querier -n openshift-monitoring -o jsonpath='{.spec.host}')
+TOKEN=$(oc whoami -t)
+
+# CPU seconds consumed by the VM's vCPUs, rate over the last 5 minutes
+curl -sk -H "Authorization: Bearer $TOKEN" \
+  --data-urlencode 'query=rate(kubevirt_vmi_vcpu_seconds_total{name="web-server-vm"}[5m])' \
+  "https://$THANOS_HOST/api/v1/query"
+
+# Memory currently used by the VM's guest OS, in bytes
+curl -sk -H "Authorization: Bearer $TOKEN" \
+  --data-urlencode 'query=kubevirt_vmi_memory_available_bytes{name="web-server-vm"}' \
+  "https://$THANOS_HOST/api/v1/query"
+Deliverable: Both queries return "status":"success". The first may return an empty result array if the VM has been idle for the full 5-minute window (no CPU seconds accumulated yet); the second should return a numeric value for kubevirt_vmi_memory_available_bytes, confirming KubeVirt is reporting memory metrics for the VM.
+
+Step 2.4: Create a PrometheusRule to alert on high VM CPU usage
+cat << 'EOF' | oc apply -f -
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: vm-alerts
+  namespace: vm-workloads
+  labels:
+    role: alert-rules
+spec:
+  groups:
+  - name: vm.rules
+    rules:
+    - alert: VMHighCPUUsage
+      expr: sum(rate(kubevirt_vmi_vcpu_seconds_total{name="web-server-vm"}[5m])) by (name) > 0.8
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "VM {{ $labels.name }} has high CPU usage"
+        description: "VM {{ $labels.name }} vCPU usage has averaged above 80% of one core for more than 5 minutes."
+EOF
+Verify the rule was accepted:
+
+oc get prometheusrule vm-alerts -n vm-workloads
+oc get prometheusrule vm-alerts -n vm-workloads -o jsonpath='{.spec.groups[0].rules[0].alert}'
+Deliverable: oc get prometheusrule vm-alerts -n vm-workloads returns the object, and the jsonpath command prints VMHighCPUUsage, confirming the rule is syntactically valid and stored.
+
+Task 3: Verify the Monitoring Pipeline End to End
+Step 3.1: Generate CPU load inside the VM's launcher pod
+POD_NAME=$(oc get pods -n vm-workloads -l kubevirt.io/vm=web-server-vm -o jsonpath='{.items[0].metadata.name}')
+echo "$POD_NAME"
+
+# Run a short CPU burn inside the compute container of the launcher pod
+oc exec -n vm-workloads "$POD_NAME" -c compute -- /bin/sh -c "timeout 120 sh -c 'while true; do :; done' &"
+If your cluster does not permit exec into the compute container, it is sufficient to let the VM run idle and observe baseline metrics in the next step; note this in your results.
+
+Step 3.2: Re-query metrics and confirm the rule is loaded in Prometheus
+THANOS_HOST=$(oc get route thanos-querier -n openshift-monitoring -o jsonpath='{.spec.host}')
+TOKEN=$(oc whoami -t)
+
+curl -sk -H "Authorization: Bearer $TOKEN" \
+  --data-urlencode 'query=rate(kubevirt_vmi_vcpu_seconds_total{name="web-server-vm"}[5m])' \
+  "https://$THANOS_HOST/api/v1/query"
+Then confirm the alerting rule has been picked up by the user workload Prometheus:
+
+curl -sk -H "Authorization: Bearer $TOKEN" \
+  "https://$THANOS_HOST/api/v1/rules" | grep -o "VMHighCPUUsage"
+Deliverable: The CPU query returns a non-empty result array with a value greater than 0 (confirming vCPU activity is being scraped), and the second command prints VMHighCPUUsage, confirming Prometheus has loaded your alert rule and is evaluating it.
+
+Step 3.3: Check alert state
+curl -sk -H "Authorization: Bearer $TOKEN" \
+  "https://$THANOS_HOST/api/v1/alerts" | grep -A5 "VMHighCPUUsage"
+Deliverable: Either no output (the alert has not fired because the 5-minute for duration has not elapsed or the threshold was not crossed) or a JSON block showing "state":"pending" or "state":"firing" for VMHighCPUUsage. Both outcomes confirm the rule is being actively evaluated by Prometheus.
+
+Expected Outcomes
+A running virtual machine in the vm-workloads namespace with its metrics visible in the OpenShift monitoring stack
+Verified curl-based queries against the Thanos Querier API returning real KubeVirt metric names (kubevirt_vmi_info, kubevirt_vmi_vcpu_seconds_total, kubevirt_vmi_memory_available_bytes)
+A working PrometheusRule (VMHighCPUUsage) loaded and evaluated by the user workload Prometheus instance
+Troubleshooting
+Issue 1: Thanos Querier queries return an empty result array for kubevirt_vmi_info
+
+Symptom: "status":"success" but "result":[]. Diagnostic hint: check that the vm-workloads namespace has the openshift.io/cluster-monitoring=true label (oc get namespace vm-workloads --show-labels), and confirm at least 60-90 seconds have passed since the VM entered the Running phase for the first scrape to complete.
+
+Issue 2: curl to the Thanos Querier route returns 401 Unauthorized or 403 Forbidden
+
+Symptom: HTTP error instead of JSON. Diagnostic hint: confirm your token is current with oc whoami -t (tokens can expire), and verify your user has the cluster-monitoring-view role bound, since anonymous or under-privileged users cannot query the monitoring API by default.
+
+Conclusion
+In this lab, you enabled OpenShift's user workload monitoring, deployed a virtual machine under OpenShift Virtualization, and confirmed that KubeVirt's built-in metrics pipeline exposes real CPU, memory, and identity metrics for that VM through Prometheus and the Thanos Querier API. You then authored and validated a PrometheusRule that alerts on sustained high vCPU usage, and verified end to end that the rule was loaded and actively evaluated by the cluster's monitoring stack. These are the same mechanisms used to monitor production virtual machine workloads on OpenShift, so the ServiceMonitor, PrometheusRule, and query patterns you practiced here translate directly to building dashboards and alerting policies for real VM fleets. As a next step, consider extending the alert rule set with memory and storage thresholds, and wiring Alertmanager routes to a real notification channel such as email or a chat webhook.
