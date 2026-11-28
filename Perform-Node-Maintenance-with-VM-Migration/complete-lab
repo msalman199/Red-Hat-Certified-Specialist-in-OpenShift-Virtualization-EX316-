@@ -1,0 +1,682 @@
+Lab 17: Perform Node Maintenance with VM Migration
+Objectives
+By the end of this lab, you will be able to:
+
+Understand the importance of proper node maintenance procedures in OpenShift Virtualization environments
+Safely drain OpenShift nodes to prepare them for maintenance activities
+Migrate virtual machines from nodes scheduled for maintenance to healthy nodes
+Monitor VM migration status and ensure service continuity during maintenance operations
+Verify successful VM migration and node readiness for maintenance
+Restore nodes to active service after maintenance completion
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of OpenShift Container Platform concepts and architecture
+Familiarity with OpenShift CLI (oc) commands and navigation
+Knowledge of Kubernetes node management principles
+Understanding of virtual machine concepts and lifecycle management
+Experience with OpenShift Virtualization (CNV) fundamentals
+Access to an OpenShift cluster with OpenShift Virtualization installed
+Cluster administrator privileges or appropriate RBAC permissions
+Lab Environment Setup
+Ready-to-Use Cloud Machines: Al Nafi provides pre-configured Linux-based cloud machines with OpenShift Virtualization already installed and configured. Simply click Start Lab to access your environment - no need to build your own VM or install software.
+
+Your lab environment includes:
+
+OpenShift Container Platform 4.12+ cluster
+OpenShift Virtualization operator installed
+Multiple worker nodes available for VM migration
+Sample virtual machines running on different nodes
+Pre-configured storage classes and networking
+Task 1: Prepare for Node Maintenance Operations
+Subtask 1.1: Verify Cluster Status and Node Health
+First, let's examine the current state of our OpenShift cluster and identify the nodes available for maintenance operations.
+
+Connect to your OpenShift cluster:
+# Verify cluster connection
+oc whoami
+oc cluster-info
+List all nodes in the cluster:
+# Display all nodes with their status
+oc get nodes -o wide
+
+# Get detailed node information
+oc describe nodes
+Check node resource utilization:
+# View node resource usage
+oc adm top nodes
+
+# Check node conditions and taints
+oc get nodes -o custom-columns=NAME:.metadata.name,STATUS:.status.conditions[-1].type,TAINTS:.spec.taints
+Subtask 1.2: Identify Running Virtual Machines
+Before draining any node, we need to understand which VMs are currently running and where they are located.
+
+List all virtual machines in the cluster:
+# Get all VMs across all namespaces
+oc get vm -A
+
+# Get detailed VM information including node placement
+oc get vmi -A -o wide
+Check VM distribution across nodes:
+# Create a script to show VM distribution
+cat << 'EOF' > vm-distribution.sh
+#!/bin/bash
+echo "VM Distribution Across Nodes:"
+echo "=============================="
+for node in $(oc get nodes --no-headers -o custom-columns=NAME:.metadata.name); do
+    echo "Node: $node"
+    oc get vmi -A --field-selector spec.nodeName=$node --no-headers -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name 2>/dev/null || echo "  No VMs running"
+    echo ""
+done
+EOF
+
+chmod +x vm-distribution.sh
+./vm-distribution.sh
+Verify VM status and readiness:
+# Check VM instance status
+oc get vmi -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,PHASE:.status.phase,NODE:.status.nodeName,READY:.status.conditions[?(@.type==\"Ready\")].status
+Subtask 1.3: Select Target Node for Maintenance
+Choose a worker node for maintenance (avoid master nodes):
+# List worker nodes only
+oc get nodes -l node-role.kubernetes.io/worker --no-headers
+
+# Set environment variable for the node to maintain
+export MAINTENANCE_NODE=$(oc get nodes -l node-role.kubernetes.io/worker --no-headers | head -1 | awk '{print $1}')
+echo "Selected node for maintenance: $MAINTENANCE_NODE"
+Verify the selected node has VMs running:
+# Check VMs on the selected node
+oc get vmi -A --field-selector spec.nodeName=$MAINTENANCE_NODE
+Task 2: Drain Nodes Using oc adm drain
+Subtask 2.1: Understand Node Draining Process
+Node draining is a critical operation that safely removes workloads from a node before maintenance. For OpenShift Virtualization, this process includes special handling for VMs.
+
+Review drain command options:
+# Display drain command help
+oc adm drain --help | grep -A 10 -B 5 "virtual"
+Check current node schedulability:
+# Verify node is currently schedulable
+oc get node $MAINTENANCE_NODE -o jsonpath='{.spec.unschedulable}'
+echo ""
+Subtask 2.2: Perform Node Drain Operation
+Initiate node drain with VM-specific options:
+# Drain the node with appropriate flags for VMs
+oc adm drain $MAINTENANCE_NODE \
+  --ignore-daemonsets \
+  --delete-emptydir-data \
+  --force \
+  --timeout=300s
+
+# Alternative command for environments with live migration
+oc adm drain $MAINTENANCE_NODE \
+  --ignore-daemonsets \
+  --delete-emptydir-data \
+  --disable-eviction \
+  --timeout=600s
+Monitor the drain process:
+# Watch node status during drain
+watch -n 5 "oc get node $MAINTENANCE_NODE -o custom-columns=NAME:.metadata.name,STATUS:.status.conditions[-1].type,SCHEDULABLE:.spec.unschedulable,TAINTS:.spec.taints"
+Create a monitoring script for drain progress:
+cat << 'EOF' > monitor-drain.sh
+#!/bin/bash
+NODE=$1
+if [ -z "$NODE" ]; then
+    echo "Usage: $0 <node-name>"
+    exit 1
+fi
+
+echo "Monitoring drain progress for node: $NODE"
+echo "========================================"
+
+while true; do
+    echo "$(date): Checking node status..."
+    
+    # Check if node is unschedulable
+    UNSCHEDULABLE=$(oc get node $NODE -o jsonpath='{.spec.unschedulable}')
+    echo "Node unschedulable: $UNSCHEDULABLE"
+    
+    # Count remaining pods
+    POD_COUNT=$(oc get pods -A --field-selector spec.nodeName=$NODE --no-headers 2>/dev/null | wc -l)
+    echo "Remaining pods: $POD_COUNT"
+    
+    # Count remaining VMs
+    VM_COUNT=$(oc get vmi -A --field-selector spec.nodeName=$NODE --no-headers 2>/dev/null | wc -l)
+    echo "Remaining VMs: $VM_COUNT"
+    
+    if [ "$VM_COUNT" -eq 0 ] && [ "$POD_COUNT" -eq 0 ]; then
+        echo "Node successfully drained!"
+        break
+    fi
+    
+    echo "Waiting 30 seconds..."
+    echo "------------------------"
+    sleep 30
+done
+EOF
+
+chmod +x monitor-drain.sh
+Run the monitoring script:
+# Monitor drain progress
+./monitor-drain.sh $MAINTENANCE_NODE
+Task 3: Migrate VMs from Drained Nodes
+Subtask 3.1: Understand VM Migration Process
+VM migration in OpenShift Virtualization can occur automatically during node drain or can be manually triggered.
+
+Check migration policies:
+# Look for existing migration policies
+oc get migrationpolicy -A
+
+# Check cluster-wide migration configuration
+oc get kubevirt -n openshift-cnv -o yaml | grep -A 10 -B 5 migration
+Verify live migration capabilities:
+# Check if live migration is supported
+oc get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.allocatable.devices\.kubevirt\.io/kvm}{"\n"}{end}'
+Subtask 3.2: Monitor Automatic VM Migration
+During the drain process, VMs should automatically migrate to other available nodes.
+
+Create a VM migration monitoring script:
+cat << 'EOF' > monitor-vm-migration.sh
+#!/bin/bash
+SOURCE_NODE=$1
+if [ -z "$SOURCE_NODE" ]; then
+    echo "Usage: $0 <source-node-name>"
+    exit 1
+fi
+
+echo "Monitoring VM migration from node: $SOURCE_NODE"
+echo "=============================================="
+
+# Get initial VM list
+INITIAL_VMS=$(oc get vmi -A --field-selector spec.nodeName=$SOURCE_NODE --no-headers -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name | tr ' ' ':')
+
+if [ -z "$INITIAL_VMS" ]; then
+    echo "No VMs found on source node"
+    exit 0
+fi
+
+echo "VMs to migrate:"
+echo "$INITIAL_VMS" | tr ':' ' '
+echo ""
+
+while true; do
+    echo "$(date): Checking migration status..."
+    
+    for vm_info in $INITIAL_VMS; do
+        NAMESPACE=$(echo $vm_info | cut -d':' -f1)
+        VM_NAME=$(echo $vm_info | cut -d':' -f2)
+        
+        # Check current VM location
+        CURRENT_NODE=$(oc get vmi $VM_NAME -n $NAMESPACE -o jsonpath='{.status.nodeName}' 2>/dev/null)
+        PHASE=$(oc get vmi $VM_NAME -n $NAMESPACE -o jsonpath='{.status.phase}' 2>/dev/null)
+        
+        if [ "$CURRENT_NODE" != "$SOURCE_NODE" ]; then
+            echo "✓ VM $NAMESPACE/$VM_NAME migrated to: $CURRENT_NODE (Phase: $PHASE)"
+        else
+            echo "⏳ VM $NAMESPACE/$VM_NAME still on: $CURRENT_NODE (Phase: $PHASE)"
+        fi
+    done
+    
+    # Check if any VMs remain on source node
+    REMAINING=$(oc get vmi -A --field-selector spec.nodeName=$SOURCE_NODE --no-headers 2>/dev/null | wc -l)
+    
+    if [ "$REMAINING" -eq 0 ]; then
+        echo ""
+        echo "✅ All VMs successfully migrated from $SOURCE_NODE"
+        break
+    fi
+    
+    echo "Remaining VMs on source node: $REMAINING"
+    echo "------------------------"
+    sleep 15
+done
+EOF
+
+chmod +x monitor-vm-migration.sh
+Run the VM migration monitor:
+# Monitor VM migration progress
+./monitor-vm-migration.sh $MAINTENANCE_NODE
+Subtask 3.3: Manual VM Migration (if needed)
+If automatic migration doesn't occur or fails, you can manually trigger VM migration.
+
+Create manual migration for specific VMs:
+# Function to manually migrate a VM
+migrate_vm() {
+    local namespace=$1
+    local vm_name=$2
+    local target_node=$3
+    
+    echo "Manually migrating VM $namespace/$vm_name to node $target_node"
+    
+    # Create VirtualMachineInstanceMigration object
+    cat << EOF | oc apply -f -
+apiVersion: kubevirt.io/v1
+kind: VirtualMachineInstanceMigration
+metadata:
+  name: ${vm_name}-migration-$(date +%s)
+  namespace: $namespace
+spec:
+  vmiName: $vm_name
+EOF
+}
+
+# Example usage (replace with actual VM details)
+# migrate_vm "default" "test-vm" "worker-node-2"
+Check migration object status:
+# List all migrations
+oc get vmim -A
+
+# Get detailed migration status
+oc describe vmim -A
+Task 4: Monitor VM Status During Node Maintenance
+Subtask 4.1: Create Comprehensive Monitoring Dashboard
+Create a comprehensive monitoring script:
+cat << 'EOF' > maintenance-monitor.sh
+#!/bin/bash
+MAINTENANCE_NODE=$1
+if [ -z "$MAINTENANCE_NODE" ]; then
+    echo "Usage: $0 <maintenance-node-name>"
+    exit 1
+fi
+
+# Function to display header
+show_header() {
+    clear
+    echo "=========================================="
+    echo "OpenShift Node Maintenance Monitor"
+    echo "Node: $MAINTENANCE_NODE"
+    echo "Time: $(date)"
+    echo "=========================================="
+    echo ""
+}
+
+# Function to show node status
+show_node_status() {
+    echo "NODE STATUS:"
+    echo "------------"
+    oc get node $MAINTENANCE_NODE -o custom-columns=NAME:.metadata.name,STATUS:.status.conditions[-1].type,SCHEDULABLE:.spec.unschedulable,READY:.status.conditions[?@.type==\"Ready\"].status
+    echo ""
+}
+
+# Function to show VM status
+show_vm_status() {
+    echo "VIRTUAL MACHINE STATUS:"
+    echo "----------------------"
+    
+    # VMs on maintenance node
+    VMS_ON_NODE=$(oc get vmi -A --field-selector spec.nodeName=$MAINTENANCE_NODE --no-headers 2>/dev/null | wc -l)
+    echo "VMs remaining on maintenance node: $VMS_ON_NODE"
+    
+    if [ "$VMS_ON_NODE" -gt 0 ]; then
+        echo "VMs still on $MAINTENANCE_NODE:"
+        oc get vmi -A --field-selector spec.nodeName=$MAINTENANCE_NODE -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,PHASE:.status.phase,READY:.status.conditions[?@.type==\"Ready\"].status
+    fi
+    echo ""
+    
+    # All VMs status
+    echo "All VMs in cluster:"
+    oc get vmi -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,PHASE:.status.phase,NODE:.status.nodeName,READY:.status.conditions[?@.type==\"Ready\"].status
+    echo ""
+}
+
+# Function to show migration status
+show_migration_status() {
+    echo "MIGRATION STATUS:"
+    echo "----------------"
+    MIGRATIONS=$(oc get vmim -A --no-headers 2>/dev/null | wc -l)
+    if [ "$MIGRATIONS" -gt 0 ]; then
+        oc get vmim -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,PHASE:.status.phase,SOURCE:.spec.vmiName
+    else
+        echo "No active migrations"
+    fi
+    echo ""
+}
+
+# Function to show pod status
+show_pod_status() {
+    echo "POD STATUS ON MAINTENANCE NODE:"
+    echo "------------------------------"
+    PODS_ON_NODE=$(oc get pods -A --field-selector spec.nodeName=$MAINTENANCE_NODE --no-headers 2>/dev/null | wc -l)
+    echo "Pods remaining on maintenance node: $PODS_ON_NODE"
+    
+    if [ "$PODS_ON_NODE" -gt 0 ]; then
+        echo "Pods still on $MAINTENANCE_NODE:"
+        oc get pods -A --field-selector spec.nodeName=$MAINTENANCE_NODE -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,STATUS:.status.phase
+    fi
+    echo ""
+}
+
+# Main monitoring loop
+while true; do
+    show_header
+    show_node_status
+    show_vm_status
+    show_migration_status
+    show_pod_status
+    
+    echo "Press Ctrl+C to exit monitoring"
+    echo "Next update in 30 seconds..."
+    sleep 30
+done
+EOF
+
+chmod +x maintenance-monitor.sh
+Run the comprehensive monitor:
+# Start comprehensive monitoring
+./maintenance-monitor.sh $MAINTENANCE_NODE
+Subtask 4.2: Verify VM Health After Migration
+Create VM health check script:
+cat << 'EOF' > vm-health-check.sh
+#!/bin/bash
+echo "VM Health Check Report"
+echo "====================="
+echo "Generated: $(date)"
+echo ""
+
+# Check all VMs
+for vm in $(oc get vm -A --no-headers -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name | tr ' ' ':'); do
+    NAMESPACE=$(echo $vm | cut -d':' -f1)
+    VM_NAME=$(echo $vm | cut -d':' -f2)
+    
+    echo "Checking VM: $NAMESPACE/$VM_NAME"
+    echo "--------------------------------"
+    
+    # Get VM status
+    VM_STATUS=$(oc get vm $VM_NAME -n $NAMESPACE -o jsonpath='{.status.printableStatus}' 2>/dev/null)
+    echo "VM Status: $VM_STATUS"
+    
+    # Get VMI status if running
+    if [ "$VM_STATUS" = "Running" ]; then
+        VMI_PHASE=$(oc get vmi $VM_NAME -n $NAMESPACE -o jsonpath='{.status.phase}' 2>/dev/null)
+        VMI_NODE=$(oc get vmi $VM_NAME -n $NAMESPACE -o jsonpath='{.status.nodeName}' 2>/dev/null)
+        VMI_READY=$(oc get vmi $VM_NAME -n $NAMESPACE -o jsonpath='{.status.conditions[?@.type=="Ready"].status}' 2>/dev/null)
+        
+        echo "VMI Phase: $VMI_PHASE"
+        echo "Running on Node: $VMI_NODE"
+        echo "Ready Status: $VMI_READY"
+        
+        # Check if VM has network connectivity
+        VM_IP=$(oc get vmi $VM_NAME -n $NAMESPACE -o jsonpath='{.status.interfaces[0].ipAddress}' 2>/dev/null)
+        if [ ! -z "$VM_IP" ]; then
+            echo "VM IP Address: $VM_IP"
+        fi
+    fi
+    
+    echo ""
+done
+
+echo "Health Check Complete"
+EOF
+
+chmod +x vm-health-check.sh
+Run VM health check:
+# Perform comprehensive VM health check
+./vm-health-check.sh
+Subtask 4.3: Validate Node Drain Completion
+Verify node is fully drained:
+# Check node drain status
+check_drain_status() {
+    local node=$1
+    
+    echo "Drain Status Check for Node: $node"
+    echo "=================================="
+    
+    # Check if node is unschedulable
+    UNSCHEDULABLE=$(oc get node $node -o jsonpath='{.spec.unschedulable}')
+    echo "Node unschedulable: $UNSCHEDULABLE"
+    
+    # Check for NoSchedule taint
+    TAINT=$(oc get node $node -o jsonpath='{.spec.taints[?@.effect=="NoSchedule"].key}')
+    echo "NoSchedule taint: $TAINT"
+    
+    # Count remaining workloads
+    PODS=$(oc get pods -A --field-selector spec.nodeName=$node --no-headers 2>/dev/null | grep -v "DaemonSet" | wc -l)
+    VMS=$(oc get vmi -A --field-selector spec.nodeName=$node --no-headers 2>/dev/null | wc -l)
+    
+    echo "Remaining pods (non-DaemonSet): $PODS"
+    echo "Remaining VMs: $VMS"
+    
+    if [ "$UNSCHEDULABLE" = "true" ] && [ "$PODS" -eq 0 ] && [ "$VMS" -eq 0 ]; then
+        echo "✅ Node successfully drained and ready for maintenance"
+        return 0
+    else
+        echo "❌ Node drain incomplete"
+        return 1
+    fi
+}
+
+# Check drain status
+check_drain_status $MAINTENANCE_NODE
+Task 5: Perform Maintenance and Restore Node
+Subtask 5.1: Simulate Maintenance Activities
+Document maintenance window:
+# Create maintenance log
+cat << EOF > maintenance-log-$MAINTENANCE_NODE.txt
+Node Maintenance Log
+===================
+Node: $MAINTENANCE_NODE
+Start Time: $(date)
+Maintenance Type: Simulated System Updates
+
+Pre-maintenance Status:
+- Node drained: $(oc get node $MAINTENANCE_NODE -o jsonpath='{.spec.unschedulable}')
+- VMs migrated: $(oc get vmi -A --field-selector spec.nodeName=$MAINTENANCE_NODE --no-headers | wc -l) remaining
+- Pods remaining: $(oc get pods -A --field-selector spec.nodeName=$MAINTENANCE_NODE --no-headers | wc -l)
+
+Maintenance Activities:
+- System package updates (simulated)
+- Kernel updates (simulated)
+- Security patches (simulated)
+- Hardware checks (simulated)
+
+EOF
+
+echo "Maintenance log created: maintenance-log-$MAINTENANCE_NODE.txt"
+Simulate maintenance activities:
+# Simulate maintenance tasks
+echo "Simulating maintenance activities..."
+echo "1. Updating system packages..."
+sleep 10
+echo "2. Applying security patches..."
+sleep 10
+echo "3. Performing hardware checks..."
+sleep 10
+echo "4. Rebooting system (simulated)..."
+sleep 15
+echo "Maintenance activities completed!"
+Subtask 5.2: Restore Node to Service
+Uncordon the node:
+# Remove drain and make node schedulable again
+oc adm uncordon $MAINTENANCE_NODE
+
+# Verify node is schedulable
+oc get node $MAINTENANCE_NODE -o custom-columns=NAME:.metadata.name,STATUS:.status.conditions[-1].type,SCHEDULABLE:.spec.unschedulable
+Verify node health:
+# Check node conditions
+oc describe node $MAINTENANCE_NODE | grep -A 10 "Conditions:"
+
+# Verify node resources
+oc adm top node $MAINTENANCE_NODE
+Update maintenance log:
+# Complete maintenance log
+cat << EOF >> maintenance-log-$MAINTENANCE_NODE.txt
+
+Maintenance Completion:
+End Time: $(date)
+Node Status: $(oc get node $MAINTENANCE_NODE -o jsonpath='{.status.conditions[-1].type}')
+Node Schedulable: $(oc get node $MAINTENANCE_NODE -o jsonpath='{.spec.unschedulable}')
+
+Post-maintenance Verification:
+- Node ready: $(oc get node $MAINTENANCE_NODE -o jsonpath='{.status.conditions[?@.type=="Ready"].status}')
+- Available for scheduling: $([ "$(oc get node $MAINTENANCE_NODE -o jsonpath='{.spec.unschedulable}')" = "null" ] && echo "Yes" || echo "No")
+
+Maintenance completed successfully.
+EOF
+
+echo "Maintenance log updated"
+cat maintenance-log-$MAINTENANCE_NODE.txt
+Subtask 5.3: Validate Cluster Health
+Perform post-maintenance cluster validation:
+cat << 'EOF' > post-maintenance-validation.sh
+#!/bin/bash
+MAINTENANCE_NODE=$1
+
+echo "Post-Maintenance Cluster Validation"
+echo "==================================="
+echo "Validation Time: $(date)"
+echo "Maintained Node: $MAINTENANCE_NODE"
+echo ""
+
+# Check cluster nodes
+echo "1. CLUSTER NODE STATUS:"
+echo "----------------------"
+oc get nodes -o custom-columns=NAME:.metadata.name,STATUS:.status.conditions[-1].type,SCHEDULABLE:.spec.unschedulable,VERSION:.status.nodeInfo.kubeletVersion
+echo ""
+
+# Check VM distribution
+echo "2. VM DISTRIBUTION:"
+echo "------------------"
+for node in $(oc get nodes --no-headers -o custom-columns=NAME:.metadata.name); do
+    vm_count=$(oc get vmi -A --field-selector spec.nodeName=$node --no-headers 2>/dev/null | wc -l)
+    echo "Node $node: $vm_count VMs"
+done
+echo ""
+
+# Check all VMs are running
+echo "3. VM STATUS SUMMARY:"
+echo "--------------------"
+TOTAL_VMS=$(oc get vm -A --no-headers | wc -l)
+RUNNING_VMS=$(oc get vm -A --no-headers -o custom-columns=STATUS:.status.printableStatus | grep -c "Running")
+STOPPED_VMS=$(oc get vm -A --no-headers -o custom-columns=STATUS:.status.printableStatus | grep -c "Stopped")
+
+echo "Total VMs: $TOTAL_VMS"
+echo "Running VMs: $RUNNING_VMS"
+echo "Stopped VMs: $STOPPED_VMS"
+echo ""
+
+# Check for any failed migrations
+echo "4. MIGRATION STATUS:"
+echo "-------------------"
+FAILED_MIGRATIONS=$(oc get vmim -A --no-headers -o custom-columns=PHASE:.status.phase 2>/dev/null | grep -c "Failed" || echo "0")
+SUCCESSFUL_MIGRATIONS=$(oc get vmim -A --no-headers -o custom-columns=PHASE:.status.phase 2>/dev/null | grep -c "Succeeded" || echo "0")
+
+echo "Failed migrations: $FAILED_MIGRATIONS"
+echo "Successful migrations: $SUCCESSFUL_MIGRATIONS"
+echo ""
+
+# Overall health assessment
+echo "5. OVERALL HEALTH ASSESSMENT:"
+echo "-----------------------------"
+if [ "$FAILED_MIGRATIONS" -eq 0 ] && [ "$RUNNING_VMS" -gt 0 ]; then
+    echo "✅ Cluster health: GOOD"
+    echo "✅ Node maintenance completed successfully"
+    echo "✅ All VMs operational"
+else
+    echo "⚠️  Cluster health: NEEDS ATTENTION"
+    echo "⚠️  Review failed migrations or VM issues"
+fi
+
+echo ""
+echo "Validation completed at $(date)"
+EOF
+
+chmod +x post-maintenance-validation.sh
+Run post-maintenance validation:
+# Validate cluster health after maintenance
+./post-maintenance-validation.sh $MAINTENANCE_NODE
+Troubleshooting Common Issues
+Issue 1: VMs Not Migrating During Drain
+Symptoms: VMs remain on the node being drained
+
+Solutions:
+
+# Check if live migration is enabled
+oc get kubevirt -n openshift-cnv -o yaml | grep -A 5 -B 5 migration
+
+# Verify migration policies
+oc get migrationpolicy -A
+
+# Check node resources on target nodes
+oc describe nodes | grep -A 5 "Allocated resources"
+
+# Manually trigger migration if needed
+oc patch vm <vm-name> -n <namespace> --type merge -p '{"spec":{"runStrategy":"RerunOnFailure"}}'
+Issue 2: Node Drain Hangs or Times Out
+Symptoms: Drain command doesn't complete within timeout period
+
+Solutions:
+
+# Increase timeout and use force options
+oc adm drain $MAINTENANCE_NODE \
+  --ignore-daemonsets \
+  --delete-emptydir-data \
+  --force \
+  --timeout=1200s \
+  --grace-period=300
+
+# Check for pods with finalizers
+oc get pods -A --field-selector spec.nodeName=$MAINTENANCE_NODE -o yaml | grep finalizers
+
+# Force delete stuck pods if necessary (use with caution)
+oc delete pod <stuck-pod> -n <namespace> --force --grace-period=0
+Issue 3: VM Migration Fails
+Symptoms: VirtualMachineInstanceMigration shows failed status
+
+Solutions:
+
+# Check migration object details
+oc describe vmim <migration-name> -n <namespace>
+
+# Verify target node resources
+oc describe node <target-node> | grep -A 10 "Allocated resources"
+
+# Check VM resource requirements
+oc get vm <vm-name> -n <namespace> -o yaml | grep -A 10 resources
+
+# Restart VM if migration consistently fails
+oc patch vm <vm-name> -n <namespace> --type merge -p '{"spec":{"running":false}}'
+sleep 30
+oc patch vm <vm-name> -n <namespace> --type merge -p '{"spec":{"running":true}}'
+Conclusion
+In this comprehensive lab, you have successfully learned and practiced the critical skills needed for performing node maintenance in OpenShift Virtualization environments. Here's what you accomplished:
+
+Key Achievements:
+
+Node Preparation: You learned how to properly assess cluster health, identify running VMs, and select appropriate nodes for maintenance operations.
+
+Safe Node Draining: You mastered the use of oc adm drain command with appropriate flags for virtualization workloads, ensuring VMs are safely migrated before maintenance begins.
+
+VM Migration Management: You gained hands-on experience with both automatic and manual VM migration processes, understanding how to monitor and troubleshoot migration operations.
+
+Comprehensive Monitoring: You developed skills in creating and using monitoring scripts to track the entire maintenance process, from initial drain through VM migration completion.
+
+Maintenance Procedures: You practiced simulating real-world maintenance activities while ensuring minimal service disruption.
+
+Service Restoration: You learned how to properly restore nodes to active service and validate cluster health post-maintenance.
+
+Why This Matters:
+
+Node maintenance is a critical operational task in production OpenShift Virtualization environments. The skills you've developed ensure:
+
+Zero-downtime maintenance: VMs continue running on other nodes during maintenance
+Service continuity: Applications remain available throughout the maintenance window
+Risk mitigation: Proper procedures prevent data loss and service interruptions
+Operational excellence: Systematic approaches to maintenance reduce human error
+Compliance: Many organizations require documented maintenance procedures for audit purposes
+Real-World Applications:
+
+These skills directly apply to:
+
+Scheduled system updates and security patching
+Hardware replacement and upgrades
+Capacity planning and cluster optimization
+Disaster recovery and business continuity planning
+Meeting SLA requirements for high-availability services
+Next Steps:
+
+To further develop your OpenShift Virtualization expertise, consider exploring:
+
+Advanced migration policies and automation
+Integration with external monitoring and alerting systems
+Backup and disaster recovery procedures for VMs
+Performance optimization during migration operations
+Multi-cluster VM migration strategies
+You now have the foundational knowledge and practical experience to confidently perform node maintenance operations in production OpenShift Virtualization environments while maintaining service availability and data integrity.
